@@ -10,6 +10,7 @@
 6. [Test Unitari](#test)
 7. [Dipendenze](#dipendenze)
 8. [Riferimenti](#riferimenti)
+9. [Changelog](#changelog)
 
 ---
 
@@ -282,3 +283,47 @@ Per eseguire tutti i test:
 - [gurux.dlms Java library](https://www.gurux.fi/gurux.dlms.java)
 - [gurux.dlms GitHub](https://github.com/Gurux/gurux.dlms.java)
 - [OBIS code standard IEC 62056-61](https://www.iec.ch/)
+
+---
+
+## 9. Changelog <a name="changelog"></a>
+
+### 2026-03-17 – Fix protocollo DLMS in DlmsMeterClient
+
+Corretti 4 bug nell'implementazione del protocollo DLMS nel file `DlmsMeterClient.java`.
+
+#### Bug 1 (Critico): `sendReceive()` – Write-all-before-read
+
+**Problema:** Il metodo scriveva tutti i frame di richiesta sul transport prima di leggere qualsiasi risposta. In HDLC, ogni frame richiede un ACK individuale dal meter prima di poter inviare il successivo.
+
+**Fix:** Riscritto `sendReceive()` per inviare un frame alla volta e leggere la risposta prima di procedere al frame successivo. Aggiunto helper `readDlmsPacket()` che esegue write → read → `getData()` per singolo frame. Poiché `transport.read()` garantisce un frame completo, una singola chiamata a `getData()` è sufficiente per estrarre l'APDU.
+
+#### Bug 2 (Critico): `connect()` – AARE non processato tramite `getData()`
+
+**Problema:** Dopo la scrittura dei frame AARQ, i byte raw del transport (che includono il framing HDLC/WRAPPER) venivano passati direttamente a `parseAareResponse()`. Questo metodo si aspetta solo l'APDU AARE, non il frame completo. Mancava la chiamata a `GXDLMSClient.getData()` per strippare il framing del livello transport.
+
+**Fix:** La risposta AARE viene ora processata tramite `readDlmsPacket()` → `getData()`, e il risultato `reply.getData()` (solo APDU) viene passato a `parseAareResponse()`. Lo stesso fix è stato applicato al parsing della risposta SNRM/UA e al challenge-response.
+
+#### Bug 3 (Critico): `connect()` – Challenge-response stessa problematica
+
+**Problema:** I frame del challenge-response venivano tutti scritti prima di leggere le risposte, e i byte raw venivano passati a `parseApplicationAssociationResponse()` senza il processing tramite `getData()`.
+
+**Fix:** Applicata la stessa correzione dei Bug 1 e 2.
+
+#### Bug 4 (Medio): `readProfileGeneric()` – Attributo sbagliato
+
+**Problema:** `gxClient.updateValue(profile, 3, ...)` usava l'attributo 3 (`captureObjects`) invece dell'attributo 2 (`buffer`) per i dati letti dal profile generic.
+
+**Fix:** Corretto in `gxClient.updateValue(profile, 2, reply.getValue())`.
+
+#### Riepilogo modifiche
+
+| File | Modifica |
+|---|---|
+| `DlmsMeterClient.java` | Rimosso import `GXByteBuffer` (non più necessario) |
+| `DlmsMeterClient.java` | `connect()`: SNRM/UA usa `readDlmsPacket()` + `parseUAResponse(reply.getData())` |
+| `DlmsMeterClient.java` | `connect()`: AARQ/AARE usa `readDlmsPacket()` + `parseAareResponse(reply.getData())` |
+| `DlmsMeterClient.java` | `connect()`: challenge usa `readDlmsPacket()` + `parseApplicationAssociationResponse(reply.getData())` |
+| `DlmsMeterClient.java` | Nuovo metodo `readDlmsPacket(byte[], GXReplyData)` per I/O singolo frame |
+| `DlmsMeterClient.java` | `sendReceive()`: riscritto con pattern frame-by-frame + multi-block |
+| `DlmsMeterClient.java` | `readProfileGeneric()`: attributo corretto da 3 a 2 |

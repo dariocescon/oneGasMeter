@@ -12,6 +12,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import gurux.dlms.enums.DataType;
+import gurux.dlms.objects.GXDLMSData;
+import gurux.dlms.objects.GXDLMSRegister;
+
 import java.io.IOException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -183,5 +187,81 @@ class DlmsMeterClientTest {
     void getGxClientReturnsNonNullClient() {
         DlmsMeterClient client = new DlmsMeterClient(wrapperConfig, transport);
         assertThat(client.getGxClient()).isNotNull();
+    }
+
+    // -----------------------------------------------------------------------
+    // readAttribute – transport errors
+    // -----------------------------------------------------------------------
+
+    @Test
+    void readAttributeThrowsDlmsCommunicationExceptionOnTransportError() throws IOException {
+        when(transport.read()).thenThrow(new IOException("read error"));
+
+        DlmsMeterClient client = new DlmsMeterClient(wrapperConfig, transport);
+        GXDLMSData data = new GXDLMSData("0.0.96.1.0.255");
+
+        assertThatThrownBy(() -> client.readAttribute(data, 2))
+                .isInstanceOf(DlmsCommunicationException.class)
+                .hasMessageContaining("0.0.96.1.0.255")
+                .hasMessageContaining("attribute 2");
+    }
+
+    // -----------------------------------------------------------------------
+    // writeAttribute – transport errors
+    // -----------------------------------------------------------------------
+
+    @Test
+    void writeAttributeThrowsDlmsCommunicationExceptionOnTransportError() throws IOException {
+        when(transport.read()).thenThrow(new IOException("write error"));
+
+        DlmsMeterClient client = new DlmsMeterClient(wrapperConfig, transport);
+        GXDLMSRegister register = new GXDLMSRegister("1.0.1.8.0.255");
+
+        assertThatThrownBy(() -> client.writeAttribute(register, 2))
+                .isInstanceOf(DlmsCommunicationException.class)
+                .hasMessageContaining("1.0.1.8.0.255")
+                .hasMessageContaining("attribute 2");
+    }
+
+    // -----------------------------------------------------------------------
+    // invokeMethod – transport errors
+    // -----------------------------------------------------------------------
+
+    @Test
+    void invokeMethodThrowsDlmsCommunicationExceptionOnTransportError() throws IOException {
+        when(transport.read()).thenThrow(new IOException("method error"));
+
+        DlmsMeterClient client = new DlmsMeterClient(wrapperConfig, transport);
+        GXDLMSData data = new GXDLMSData("0.0.96.3.10.255");
+
+        assertThatThrownBy(() -> client.invokeMethod(data, 1, 0, DataType.INT8))
+                .isInstanceOf(DlmsCommunicationException.class)
+                .hasMessageContaining("0.0.96.3.10.255")
+                .hasMessageContaining("method 1");
+    }
+
+    @Test
+    void readAttributeReThrowsDlmsCommunicationException() throws IOException {
+        // Simulate a DLMS error that's already wrapped
+        when(transport.read()).thenThrow(new IOException("timeout"));
+
+        DlmsMeterClient client = new DlmsMeterClient(wrapperConfig, transport);
+        GXDLMSData data = new GXDLMSData("0.0.96.1.0.255");
+
+        assertThatThrownBy(() -> client.readAttribute(data, 2))
+                .isInstanceOf(DlmsCommunicationException.class);
+    }
+
+    @Test
+    void invokeMethodIncludesObisAndMethodInMessage() throws IOException {
+        when(transport.read()).thenThrow(new IOException("fail"));
+
+        DlmsMeterClient client = new DlmsMeterClient(wrapperConfig, transport);
+        GXDLMSData data = new GXDLMSData("0.0.13.0.0.255");
+
+        assertThatThrownBy(() -> client.invokeMethod(data, 2, 0, DataType.INT8))
+                .isInstanceOf(DlmsCommunicationException.class)
+                .hasMessageContaining("method 2")
+                .hasMessageContaining("0.0.13.0.0.255");
     }
 }

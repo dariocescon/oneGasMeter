@@ -4,9 +4,9 @@ import com.aton.proj.oneGasMeter.config.DlmsClientConfig;
 import com.aton.proj.oneGasMeter.dlms.transport.DlmsTransport;
 import com.aton.proj.oneGasMeter.exception.DlmsCommunicationException;
 import com.aton.proj.oneGasMeter.model.MeterReading;
-import gurux.dlms.GXByteBuffer;
 import gurux.dlms.GXDLMSClient;
 import gurux.dlms.GXReplyData;
+import gurux.dlms.enums.DataType;
 import gurux.dlms.enums.InterfaceType;
 import gurux.dlms.objects.GXDLMSClock;
 import gurux.dlms.objects.GXDLMSData;
@@ -33,6 +33,9 @@ import java.util.List;
  *   <li>Reading generic data objects ({@link #readData(String)})</li>
  *   <li>Reading the meter clock ({@link #readClock()})</li>
  *   <li>Reading profile-generic (load profile) data ({@link #readProfileGeneric(String, Date, Date)})</li>
+ *   <li>Generic attribute reading ({@link #readAttribute(GXDLMSObject, int)})</li>
+ *   <li>Attribute writing / SET ({@link #writeAttribute(GXDLMSObject, int)})</li>
+ *   <li>Method invocation / ACTION ({@link #invokeMethod(GXDLMSObject, int, Object, DataType)})</li>
  * </ul>
  * </p>
  *
@@ -99,28 +102,30 @@ public class DlmsMeterClient {
             InterfaceType ifType = config.getProtocolType().getInterfaceType();
             if (ifType == InterfaceType.HDLC || ifType == InterfaceType.HDLC_WITH_MODE_E) {
                 // HDLC handshake: SNRM → UA
+                GXReplyData uaReply = new GXReplyData();
                 byte[] snrm = gxClient.snrmRequest();
-                transport.write(snrm);
-                byte[] uaReply = transport.read();
-                gxClient.parseUAResponse(uaReply);
+                readDlmsPacket(snrm, uaReply);
+                gxClient.parseUAResponse(uaReply.getData());
             }
 
             // Application association: AARQ → AARE
+            GXReplyData aareReply = new GXReplyData();
             byte[][] aarqFrames = gxClient.aarqRequest();
             for (byte[] frame : aarqFrames) {
-                transport.write(frame);
+                aareReply.clear();
+                readDlmsPacket(frame, aareReply);
             }
-            byte[] aareReply = transport.read();
-            gxClient.parseAareResponse(new GXByteBuffer(aareReply));
+            gxClient.parseAareResponse(aareReply.getData());
 
             // High-level security: challenge-response
             if (gxClient.getIsAuthenticationRequired()) {
+                GXReplyData challengeReply = new GXReplyData();
                 byte[][] challengeFrames = gxClient.getApplicationAssociationRequest();
                 for (byte[] frame : challengeFrames) {
-                    transport.write(frame);
+                    challengeReply.clear();
+                    readDlmsPacket(frame, challengeReply);
                 }
-                byte[] challengeReply = transport.read();
-                gxClient.parseApplicationAssociationResponse(new GXByteBuffer(challengeReply));
+                gxClient.parseApplicationAssociationResponse(challengeReply.getData());
             }
 
         } catch (DlmsCommunicationException e) {
@@ -290,7 +295,7 @@ public class DlmsMeterClient {
             GXDLMSProfileGeneric profile = new GXDLMSProfileGeneric(obisCode);
             byte[][] request = gxClient.readRowsByRange(profile, from, to);
             GXReplyData reply = sendReceive(request);
-            gxClient.updateValue(profile, 3, reply.getValue());
+            gxClient.updateValue(profile, 2, reply.getValue());
 
             List<Object[]> rows = new ArrayList<>();
             Object[] buffer = profile.getBuffer();
@@ -307,6 +312,90 @@ public class DlmsMeterClient {
             throw e;
         } catch (Exception e) {
             throw new DlmsCommunicationException("Failed to read profile: " + obisCode, e);
+        }
+    }
+
+    /**
+     * Reads a single attribute from a DLMS/COSEM object.
+     * <p>
+     * This is the generic GET operation: it sends a read request for the given
+     * attribute index and populates the object using
+     * {@link GXDLMSClient#updateValue}.
+     * </p>
+     *
+     * @param object    the target DLMS object (must have the OBIS code set)
+     * @param attribute the attribute index to read (1-based)
+     * @return the raw value returned by the meter
+     * @throws DlmsCommunicationException if the read fails
+     */
+    public Object readAttribute(GXDLMSObject object, int attribute)
+            throws DlmsCommunicationException {
+        try {
+            GXReplyData reply = sendReceive(gxClient.read(object, attribute));
+            gxClient.updateValue(object, attribute, reply.getValue());
+            return reply.getValue();
+        } catch (DlmsCommunicationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new DlmsCommunicationException(
+                    "Failed to read attribute " + attribute
+                            + " of " + object.getLogicalName(), e);
+        }
+    }
+
+    /**
+     * Writes (SET) a single attribute to a DLMS/COSEM object.
+     * <p>
+     * The caller must populate the attribute value on the object <em>before</em>
+     * invoking this method (e.g. {@code clock.setTime(...)}).
+     * Internally calls {@link GXDLMSClient#write(GXDLMSObject, int)}.
+     * </p>
+     *
+     * @param object    the target DLMS object with the attribute already set
+     * @param attribute the attribute index to write (1-based)
+     * @throws DlmsCommunicationException if the write fails
+     */
+    public void writeAttribute(GXDLMSObject object, int attribute)
+            throws DlmsCommunicationException {
+        try {
+            sendReceive(gxClient.write(object, attribute));
+        } catch (DlmsCommunicationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new DlmsCommunicationException(
+                    "Failed to write attribute " + attribute
+                            + " of " + object.getLogicalName(), e);
+        }
+    }
+
+    /**
+     * Invokes a method (ACTION) on a DLMS/COSEM object.
+     * <p>
+     * Used for operations such as valve disconnect/reconnect, demand register
+     * reset, script execution, etc.
+     * Internally calls {@link GXDLMSClient#method(GXDLMSObject, int, Object, DataType)}.
+     * </p>
+     *
+     * @param object      the target DLMS object
+     * @param methodIndex the method index (1-based)
+     * @param param       parameter to pass (e.g. {@code 0} for no-arg methods)
+     * @param dataType    DLMS data type of {@code param}
+     * @return the value returned by the meter (may be {@code null})
+     * @throws DlmsCommunicationException if the method invocation fails
+     */
+    public Object invokeMethod(GXDLMSObject object, int methodIndex,
+                               Object param, DataType dataType)
+            throws DlmsCommunicationException {
+        try {
+            byte[][] request = gxClient.method(object, methodIndex, param, dataType);
+            GXReplyData reply = sendReceive(request);
+            return reply.getValue();
+        } catch (DlmsCommunicationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new DlmsCommunicationException(
+                    "Failed to invoke method " + methodIndex
+                            + " on " + object.getLogicalName(), e);
         }
     }
 
@@ -333,26 +422,41 @@ public class DlmsMeterClient {
     // -----------------------------------------------------------------------
 
     /**
+     * Sends a single request frame and reads the complete response,
+     * stripping transport-level framing via {@link GXDLMSClient#getData}.
+     * <p>
+     * {@code transport.read()} guarantees a complete transport frame
+     * (HDLC flag-to-flag or WRAPPER header+payload), so a single
+     * {@code getData()} call is sufficient to extract the APDU.
+     * </p>
+     */
+    private void readDlmsPacket(byte[] data, GXReplyData reply) throws Exception {
+        if (data == null || data.length == 0) {
+            return;
+        }
+        transport.write(data);
+        byte[] response = transport.read();
+        gxClient.getData(response, reply);
+    }
+
+    /**
      * Sends all request frames and reads replies until the full response is assembled.
+     * Each frame is sent individually and its response is read before proceeding
+     * to the next frame (required for HDLC frame-level acknowledgment).
      * Handles DLMS multi-block transfers automatically by sending receiver-ready frames.
      */
     private GXReplyData sendReceive(byte[][] request) throws Exception {
         GXReplyData reply = new GXReplyData();
 
         for (byte[] frame : request) {
-            transport.write(frame);
-        }
+            reply.clear();
+            readDlmsPacket(frame, reply);
 
-        do {
-            byte[] data = transport.read();
-            gxClient.getData(data, reply);
-
-            if (reply.isMoreData()) {
-                // Request the next data block
+            while (reply.isMoreData()) {
                 byte[] nextFrame = gxClient.receiverReady(reply);
-                transport.write(nextFrame);
+                readDlmsPacket(nextFrame, reply);
             }
-        } while (reply.isMoreData());
+        }
 
         if (reply.getError() != 0) {
             throw new DlmsCommunicationException(
