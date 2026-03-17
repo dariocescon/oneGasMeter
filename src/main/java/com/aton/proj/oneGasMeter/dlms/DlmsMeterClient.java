@@ -74,6 +74,21 @@ public class DlmsMeterClient {
      * High-level authentication (challenge-response) is handled automatically
      * when required by the server.
      * </p>
+     * 
+     *                     HDLC (seriale)              WRAPPER (TCP/IP)
+     *                    ──────────────              ────────────────
+     *Livello fisico      Apri porta seriale          Apri socket TCP
+     *                         │                           │
+     *Livello 2 (DLL)    SNRM ──────► meter          (non necessario)
+     *                   meter ──────► UA              TCP fa già tutto
+     *                         │                           │
+     *Livello 7 (App)    AARQ ──────► meter          AARQ ──────► meter
+     *                   meter ──────► AARE          meter ──────► AARE
+     *                         │                           │
+     *(se HIGH auth)     challenge ──► meter         challenge ──► meter
+     *                   meter ──────► response      meter ──────► response
+     *                         │                           │
+     *                    ✅ Connesso!                ✅ Connesso!
      *
      * @throws DlmsCommunicationException if the connection or handshake fails
      */
