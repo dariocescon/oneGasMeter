@@ -1,19 +1,18 @@
 package com.aton.proj.oneGasMeter.dlms;
 
-import com.aton.proj.oneGasMeter.config.DlmsClientConfig;
-import com.aton.proj.oneGasMeter.dlms.transport.DlmsTransport;
-import com.aton.proj.oneGasMeter.dlms.transport.HdlcSerialTransport;
-import com.aton.proj.oneGasMeter.dlms.transport.TcpDlmsTransport;
-import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import com.aton.proj.oneGasMeter.config.DlmsClientConfig;
+import com.aton.proj.oneGasMeter.dlms.transport.DlmsTransport;
 
 @SpringBootTest
 class DlmsConnectionFactoryTest {
