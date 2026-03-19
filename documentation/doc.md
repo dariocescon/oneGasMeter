@@ -6,11 +6,12 @@
 2. [Protocolli Supportati](#protocolli)
 3. [Architettura](#architettura)
 4. [Configurazione](#configurazione)
-5. [Utilizzo](#utilizzo)
-6. [Test Unitari](#test)
-7. [Dipendenze](#dipendenze)
-8. [Riferimenti](#riferimenti)
-9. [Changelog](#changelog)
+5. [Utilizzo DLMS](#utilizzo)
+6. [Utilizzo COSEM](#utilizzo-cosem)
+7. [Test Unitari](#test)
+8. [Dipendenze](#dipendenze)
+9. [Riferimenti](#riferimenti)
+10. [Changelog](#changelog)
 
 ---
 
@@ -76,9 +77,14 @@ Supporto per comunicazione tramite linea elettrica (G3-PLC, PRIME):
 com.aton.proj.oneGasMeter/
 ├── config/
 │   └── DlmsClientConfig          # Configurazione immutabile (builder pattern)
+├── cosem/
+│   └── model/
+│       ├── ValveState            # Enum stato valvola (DISCONNECTED, CONNECTED, READY_FOR_RECONNECTION)
+│       ├── ExtendedReading       # Value object Extended Register (classe 4)
+│       └── DemandReading         # Value object Demand Register (classe 5)
 ├── dlms/
 │   ├── DlmsProtocolType          # Enum: HDLC, HDLC_WITH_MODE_E, WRAPPER, PLC, PLC_HDLC
-│   ├── DlmsMeterClient           # Client principale (GXDLMSClient + DlmsTransport)
+│   ├── DlmsMeterClient           # Client unificato DLMS+COSEM (registri, clock, valvola, calendar, security...)
 │   └── DlmsConnectionFactory     # Spring @Component factory
 │   └── transport/
 │       ├── DlmsTransport         # Interfaccia canale fisico
@@ -96,12 +102,34 @@ com.aton.proj.oneGasMeter/
 DlmsConnectionFactory
         │
         ▼ crea
-DlmsMeterClient
+DlmsMeterClient (DLMS + COSEM unificato)
   ├── GXDLMSClient  (gurux.dlms) ← genera/parsa frame DLMS
   └── DlmsTransport              ← trasmette/riceve byte sul canale fisico
             ├── TcpDlmsTransport  (WRAPPER su TCP socket)
             └── HdlcSerialTransport (HDLC su InputStream/OutputStream)
 ```
+
+### Operazioni DLMS supportate (package-private, uso interno)
+
+| Operazione | Metodo DlmsMeterClient | Descrizione |
+|---|---|---|
+| **GET** | `readAttribute(object, attr)` | Lettura generica di qualsiasi attributo |
+| **SET** | `writeAttribute(object, attr)` | Scrittura di un attributo (valore gia' impostato sull'oggetto) |
+| **ACTION** | `invokeMethod(object, method, param, type)` | Invocazione di un metodo COSEM |
+
+> **Nota:** Questi tre metodi sono **package-private** (non fanno parte dell'API pubblica). Sono usati internamente dai metodi COSEM di alto livello e hanno visibilita' limitata per consentire il testing con Mockito Spy.
+
+### Classi COSEM supportate (metodi pubblici di DlmsMeterClient)
+
+| Classe COSEM | ID | Operazioni |
+|---|---|---|
+| Clock | 8 | readClock, setClock, syncClock |
+| Disconnect Control | 70 | disconnectValve, reconnectValve, getValveState |
+| Extended Register | 4 | readExtendedRegister |
+| Demand Register | 5 | readDemandRegister, resetDemandRegister, nextPeriodDemandRegister |
+| Activity Calendar | 20 | readActivityCalendar, activatePassiveCalendar |
+| Script Table | 9 | executeScript |
+| Security Setup | 64 | readSecurityPolicy, readSecuritySuite |
 
 ---
 
@@ -238,7 +266,95 @@ client.disconnect();
 
 ---
 
-## 6. Test Unitari <a name="test"></a>
+## 6. Utilizzo COSEM <a name="utilizzo-cosem"></a>
+
+Le operazioni COSEM di alto livello sono metodi pubblici di `DlmsMeterClient`. Non serve creare oggetti aggiuntivi: basta usare il client gia' connesso.
+
+### 6.1 Sincronizzazione orologio
+
+```java
+// Sincronizza con l'ora di sistema
+client.syncClock();
+
+// Imposta un'ora specifica
+client.setClock(Instant.parse("2026-03-15T10:00:00Z"));
+
+// Leggi l'ora del contatore
+Instant meterTime = client.readClock();
+```
+
+### 6.2 Controllo valvola gas
+
+```java
+// Chiudi la valvola (interrompi erogazione)
+client.disconnectValve();
+
+// Riapri la valvola
+client.reconnectValve();
+
+// Leggi lo stato corrente
+ValveState state = client.getValveState();
+// state: CONNECTED, DISCONNECTED, READY_FOR_RECONNECTION
+
+// Con OBIS personalizzato
+client.disconnectValve("0.0.96.3.11.255");
+```
+
+### 6.3 Extended Register (classe 4)
+
+```java
+ExtendedReading reading = client.readExtendedRegister("1.0.1.8.0.255");
+System.out.println("Valore:    " + reading.getValue());
+System.out.println("Scaler:    " + reading.getScaler());
+System.out.println("Unita':    " + reading.getUnit());
+System.out.println("Stato:     " + reading.getStatus());
+System.out.println("Catturato: " + reading.getCaptureTime());
+```
+
+### 6.4 Demand Register (classe 5)
+
+```java
+DemandReading demand = client.readDemandRegister("1.0.1.4.0.255");
+System.out.println("Media corrente: " + demand.getCurrentAverageValue());
+System.out.println("Ultima media:   " + demand.getLastAverageValue());
+System.out.println("Periodo:        " + demand.getPeriod() + " s");
+System.out.println("N. periodi:     " + demand.getNumberOfPeriods());
+
+// Reset del registro
+client.resetDemandRegister("1.0.1.4.0.255");
+
+// Avanzamento al periodo successivo
+client.nextPeriodDemandRegister("1.0.1.4.0.255");
+```
+
+### 6.5 Activity Calendar (classe 20)
+
+```java
+// Lettura calendario completo
+GXDLMSActivityCalendar cal = client.readActivityCalendar();
+System.out.println("Calendario attivo: " + cal.getCalendarNameActive());
+
+// Attivazione del calendario passivo
+client.activatePassiveCalendar();
+```
+
+### 6.6 Script Table (classe 9)
+
+```java
+// Esecuzione di uno script
+client.executeScript("0.0.10.0.0.255", 1);
+```
+
+### 6.7 Security Setup (classe 64)
+
+```java
+Set<SecurityPolicy> policies = client.readSecurityPolicy();
+SecuritySuite suite = client.readSecuritySuite();
+```
+
+---
+
+## 7. Test Unitari <a name="test"></a>
 
 I test sono scritti con **JUnit 5** e **Mockito** (inclusi tramite `spring-boot-starter-test`).
 
@@ -248,10 +364,14 @@ I test sono scritti con **JUnit 5** e **Mockito** (inclusi tramite `spring-boot-
 | `DlmsClientConfigTest` | Builder pattern, valori default, validazione input |
 | `HdlcSerialTransportTest` | Lettura frame HDLC, gestione flag 0x7E, errori di stream |
 | `TcpDlmsTransportTest` | Parsing frame WRAPPER, write/read, timeout, socket mock |
-| `DlmsMeterClientTest` | Configurazione GXDLMSClient, gestione eccezioni, deleghe transport |
+| `DlmsMeterClientTest` | Configurazione GXDLMSClient, readAttribute/writeAttribute/invokeMethod, eccezioni |
+| `DlmsMeterClientCosemTest` | Operazioni COSEM: clock, valvola, registri, calendar, script, security (Mockito Spy) |
 | `DlmsConnectionFactoryTest` | Creazione client da Spring context, UnsupportedOperationException per HDLC |
 | `MeterReadingTest` | Builder, valori default, validazione OBIS code |
 | `DlmsCommunicationExceptionTest` | Costruttori, error code, tipo eccezione |
+| `ValveStateTest` | Mapping da ControlState, gestione null |
+| `ExtendedReadingTest` | Builder, default values, validazione OBIS |
+| `DemandReadingTest` | Builder, tutti i campi, validazione OBIS |
 
 Per eseguire tutti i test:
 ```bash
@@ -260,7 +380,7 @@ Per eseguire tutti i test:
 
 ---
 
-## 7. Dipendenze <a name="dipendenze"></a>
+## 8. Dipendenze <a name="dipendenze"></a>
 
 | Artefatto | Versione | Scopo |
 |---|---|---|
@@ -275,7 +395,7 @@ Per eseguire tutti i test:
 
 ---
 
-## 8. Riferimenti <a name="riferimenti"></a>
+## 9. Riferimenti <a name="riferimenti"></a>
 
 - [DLMS/COSEM standard – DLMS UA](https://www.dlms.com/)
 - [IEC 62056-46: HDLC data link layer](https://www.iec.ch/)
@@ -286,7 +406,72 @@ Per eseguire tutti i test:
 
 ---
 
-## 9. Changelog <a name="changelog"></a>
+## 10. Changelog <a name="changelog"></a>
+
+### 2026-03-17 – Refactoring: merge CosemMeterService in DlmsMeterClient
+
+Unificato il service layer COSEM dentro `DlmsMeterClient`. Eliminata la classe `CosemMeterService`.
+
+#### Motivazione
+
+Evitare la dispersione dei metodi tra due classi. Tutti i 17 metodi COSEM di alto livello sono ora metodi pubblici di `DlmsMeterClient`. I tre metodi generici (`readAttribute`, `writeAttribute`, `invokeMethod`) sono stati resi **package-private** (non fanno parte dell'API pubblica, visibili solo per il testing con Mockito Spy).
+
+#### File eliminati
+
+| File | Descrizione |
+|---|---|
+| `cosem/CosemMeterService.java` | Service layer separato (contenuto migrato in DlmsMeterClient) |
+| `cosem/CosemMeterServiceTest.java` | Test del service layer (sostituiti da DlmsMeterClientCosemTest) |
+
+#### File modificati
+
+| File | Modifica |
+|---|---|
+| `DlmsMeterClient.java` | +17 metodi COSEM pubblici, +4 costanti OBIS, +metodo toInstant(); readAttribute/writeAttribute/invokeMethod da public a package-private |
+
+#### Nuovi test
+
+| File | Test |
+|---|---|
+| `DlmsMeterClientCosemTest.java` | 22 test COSEM con Mockito Spy (clock, valvola, registri, calendar, script, security, errori) |
+
+Test totali progetto: da 116 a 114 (rimossi 25 test CosemMeterServiceTest, aggiunti 22 in DlmsMeterClientCosemTest, test DlmsMeterClientTest invariati).
+
+---
+
+### 2026-03-17 – Implementazione protocollo COSEM (CosemMeterService)
+
+Aggiunto il service layer COSEM con operazioni specifiche per contatori gas.
+
+#### Nuovi file
+
+| File | Descrizione |
+|---|---|
+| `cosem/CosemMeterService.java` | Service layer con 17 metodi pubblici per operazioni COSEM |
+| `cosem/model/ValveState.java` | Enum stato valvola (mapping da gurux `ControlState`) |
+| `cosem/model/ExtendedReading.java` | Value object immutabile per Extended Register (classe 4) |
+| `cosem/model/DemandReading.java` | Value object immutabile per Demand Register (classe 5) |
+
+#### Modifiche a file esistenti
+
+| File | Modifica |
+|---|---|
+| `DlmsMeterClient.java` | +3 metodi pubblici: `readAttribute()`, `writeAttribute()`, `invokeMethod()` |
+| `DlmsMeterClient.java` | +1 import: `gurux.dlms.enums.DataType` |
+
+#### Nuovi test
+
+| File | Test |
+|---|---|
+| `CosemMeterServiceTest.java` | 25 test (clock, valvola, registri, calendar, script, security, errori) |
+| `ValveStateTest.java` | 5 test (mapping, null handling) |
+| `ExtendedReadingTest.java` | 5 test (builder, default, validazione) |
+| `DemandReadingTest.java` | 5 test (builder, default, validazione) |
+| `DlmsMeterClientTest.java` | +5 test (readAttribute, writeAttribute, invokeMethod errori) |
+
+Test totali progetto: da 72 a 116.
+
+---
 
 ### 2026-03-17 – Fix protocollo DLMS in DlmsMeterClient
 

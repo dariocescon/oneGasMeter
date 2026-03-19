@@ -1,11 +1,13 @@
-package com.aton.proj.oneGasMeter.cosem;
+package com.aton.proj.oneGasMeter.dlms;
 
+import com.aton.proj.oneGasMeter.config.DlmsClientConfig;
 import com.aton.proj.oneGasMeter.cosem.model.DemandReading;
 import com.aton.proj.oneGasMeter.cosem.model.ExtendedReading;
 import com.aton.proj.oneGasMeter.cosem.model.ValveState;
-import com.aton.proj.oneGasMeter.dlms.DlmsMeterClient;
+import com.aton.proj.oneGasMeter.dlms.transport.DlmsTransport;
 import com.aton.proj.oneGasMeter.exception.DlmsCommunicationException;
 import gurux.dlms.GXDateTime;
+import gurux.dlms.enums.Authentication;
 import gurux.dlms.enums.DataType;
 import gurux.dlms.enums.Unit;
 import gurux.dlms.objects.GXDLMSActivityCalendar;
@@ -25,10 +27,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
-import java.util.Calendar;
 import java.util.Date;
 import java.util.Set;
 
@@ -38,31 +40,39 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 
+/**
+ * Test delle operazioni COSEM integrate in {@link DlmsMeterClient}.
+ * <p>
+ * Utilizza {@link Mockito#spy(Object)} per intercettare le chiamate ai metodi
+ * package-private {@code readAttribute}, {@code writeAttribute} e {@code invokeMethod},
+ * verificando che i metodi COSEM di alto livello usino correttamente gli OBIS code,
+ * gli attributi e gli indici di metodo previsti dal protocollo.
+ * </p>
+ */
 @ExtendWith(MockitoExtension.class)
-class CosemMeterServiceTest {
+class DlmsMeterClientCosemTest {
 
     @Mock
-    private DlmsMeterClient client;
+    private DlmsTransport transport;
 
-    private CosemMeterService service;
+    private DlmsMeterClient client;
 
     @BeforeEach
     void setUp() {
-        service = new CosemMeterService(client);
-    }
-
-    // -----------------------------------------------------------------------
-    // Constructor
-    // -----------------------------------------------------------------------
-
-    @Test
-    void constructorWithNullClientThrowsIllegalArgumentException() {
-        assertThatThrownBy(() -> new CosemMeterService(null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("must not be null");
+        DlmsClientConfig config = DlmsClientConfig.builder()
+                .host("192.168.1.100")
+                .port(4059)
+                .clientAddress(16)
+                .serverAddress(1)
+                .protocolType(DlmsProtocolType.WRAPPER)
+                .authentication(Authentication.NONE)
+                .build();
+        client = Mockito.spy(new DlmsMeterClient(config, transport));
     }
 
     // -----------------------------------------------------------------------
@@ -73,20 +83,10 @@ class CosemMeterServiceTest {
     class ClockTests {
 
         @Test
-        void readClockDelegatesToClient() throws DlmsCommunicationException {
-            Instant expected = Instant.parse("2026-03-15T10:00:00Z");
-            org.mockito.Mockito.when(client.readClock()).thenReturn(expected);
-
-            Instant result = service.readClock();
-
-            assertThat(result).isEqualTo(expected);
-            verify(client).readClock();
-        }
-
-        @Test
         void setClockWritesAttributeWithCorrectObis() throws DlmsCommunicationException {
-            Instant time = Instant.parse("2026-03-15T10:00:00Z");
-            service.setClock(time);
+            doNothing().when(client).writeAttribute(any(GXDLMSClock.class), eq(2));
+
+            client.setClock(Instant.parse("2026-03-15T10:00:00Z"));
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).writeAttribute(captor.capture(), eq(2));
@@ -97,14 +97,16 @@ class CosemMeterServiceTest {
 
         @Test
         void setClockWithNullTimeThrowsIllegalArgumentException() {
-            assertThatThrownBy(() -> service.setClock(null))
+            assertThatThrownBy(() -> client.setClock(null))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("must not be null");
         }
 
         @Test
         void syncClockWritesClock() throws DlmsCommunicationException {
-            service.syncClock();
+            doNothing().when(client).writeAttribute(any(GXDLMSClock.class), eq(2));
+
+            client.syncClock();
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).writeAttribute(captor.capture(), eq(2));
@@ -121,7 +123,10 @@ class CosemMeterServiceTest {
 
         @Test
         void disconnectValveInvokesMethod1WithDefaultObis() throws DlmsCommunicationException {
-            service.disconnectValve();
+            doReturn(null).when(client).invokeMethod(
+                    any(GXDLMSDisconnectControl.class), eq(1), eq(0), eq(DataType.INT8));
+
+            client.disconnectValve();
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).invokeMethod(captor.capture(), eq(1), eq(0), eq(DataType.INT8));
@@ -132,7 +137,10 @@ class CosemMeterServiceTest {
 
         @Test
         void disconnectValveWithCustomObis() throws DlmsCommunicationException {
-            service.disconnectValve("0.0.96.3.11.255");
+            doReturn(null).when(client).invokeMethod(
+                    any(GXDLMSDisconnectControl.class), eq(1), eq(0), eq(DataType.INT8));
+
+            client.disconnectValve("0.0.96.3.11.255");
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).invokeMethod(captor.capture(), eq(1), eq(0), eq(DataType.INT8));
@@ -142,7 +150,10 @@ class CosemMeterServiceTest {
 
         @Test
         void reconnectValveInvokesMethod2WithDefaultObis() throws DlmsCommunicationException {
-            service.reconnectValve();
+            doReturn(null).when(client).invokeMethod(
+                    any(GXDLMSDisconnectControl.class), eq(2), eq(0), eq(DataType.INT8));
+
+            client.reconnectValve();
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).invokeMethod(captor.capture(), eq(2), eq(0), eq(DataType.INT8));
@@ -152,7 +163,10 @@ class CosemMeterServiceTest {
 
         @Test
         void reconnectValveWithCustomObis() throws DlmsCommunicationException {
-            service.reconnectValve("0.0.96.3.11.255");
+            doReturn(null).when(client).invokeMethod(
+                    any(GXDLMSDisconnectControl.class), eq(2), eq(0), eq(DataType.INT8));
+
+            client.reconnectValve("0.0.96.3.11.255");
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).invokeMethod(captor.capture(), eq(2), eq(0), eq(DataType.INT8));
@@ -162,14 +176,13 @@ class CosemMeterServiceTest {
 
         @Test
         void getValveStateReadsAttribute4() throws DlmsCommunicationException {
-            // Simulate readAttribute populating the ControlState
             doAnswer(invocation -> {
                 GXDLMSDisconnectControl dc = (GXDLMSDisconnectControl) invocation.getArgument(0);
                 dc.setControlState(ControlState.CONNECTED);
                 return null;
             }).when(client).readAttribute(any(GXDLMSDisconnectControl.class), eq(4));
 
-            ValveState state = service.getValveState();
+            ValveState state = client.getValveState();
 
             assertThat(state).isEqualTo(ValveState.CONNECTED);
         }
@@ -182,7 +195,7 @@ class CosemMeterServiceTest {
                 return null;
             }).when(client).readAttribute(any(GXDLMSDisconnectControl.class), eq(4));
 
-            ValveState state = service.getValveState("0.0.96.3.11.255");
+            ValveState state = client.getValveState("0.0.96.3.11.255");
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).readAttribute(captor.capture(), eq(4));
@@ -215,7 +228,7 @@ class CosemMeterServiceTest {
                 return null;
             }).when(client).readAttribute(any(GXDLMSExtendedRegister.class), anyInt());
 
-            ExtendedReading reading = service.readExtendedRegister(obis);
+            ExtendedReading reading = client.readExtendedRegister(obis);
 
             assertThat(reading.getObisCode()).isEqualTo(obis);
             assertThat(reading.getValue()).isEqualTo(12345L);
@@ -232,8 +245,11 @@ class CosemMeterServiceTest {
 
         @Test
         void readExtendedRegisterDefaultUnitIsNone() throws DlmsCommunicationException {
-            // Without setting the unit in the mock, gurux defaults to Unit.NONE → "None"
-            ExtendedReading reading = service.readExtendedRegister("1.0.1.8.0.255");
+            // Without setting the unit in the stub, gurux defaults to Unit.NONE → "None"
+            doReturn(null).when(client).readAttribute(
+                    any(GXDLMSExtendedRegister.class), anyInt());
+
+            ExtendedReading reading = client.readExtendedRegister("1.0.1.8.0.255");
 
             assertThat(reading.getUnit()).isEqualTo("None");
         }
@@ -268,7 +284,7 @@ class CosemMeterServiceTest {
                 return null;
             }).when(client).readAttribute(any(GXDLMSDemandRegister.class), anyInt());
 
-            DemandReading reading = service.readDemandRegister(obis);
+            DemandReading reading = client.readDemandRegister(obis);
 
             assertThat(reading.getObisCode()).isEqualTo(obis);
             assertThat(reading.getCurrentAverageValue()).isEqualTo(500L);
@@ -286,7 +302,10 @@ class CosemMeterServiceTest {
 
         @Test
         void resetDemandRegisterInvokesMethod1() throws DlmsCommunicationException {
-            service.resetDemandRegister("1.0.1.4.0.255");
+            doReturn(null).when(client).invokeMethod(
+                    any(GXDLMSDemandRegister.class), eq(1), eq(0), eq(DataType.INT8));
+
+            client.resetDemandRegister("1.0.1.4.0.255");
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).invokeMethod(captor.capture(), eq(1), eq(0), eq(DataType.INT8));
@@ -297,7 +316,10 @@ class CosemMeterServiceTest {
 
         @Test
         void nextPeriodDemandRegisterInvokesMethod2() throws DlmsCommunicationException {
-            service.nextPeriodDemandRegister("1.0.1.4.0.255");
+            doReturn(null).when(client).invokeMethod(
+                    any(GXDLMSDemandRegister.class), eq(2), eq(0), eq(DataType.INT8));
+
+            client.nextPeriodDemandRegister("1.0.1.4.0.255");
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).invokeMethod(captor.capture(), eq(2), eq(0), eq(DataType.INT8));
@@ -324,7 +346,7 @@ class CosemMeterServiceTest {
                 return null;
             }).when(client).readAttribute(any(GXDLMSActivityCalendar.class), anyInt());
 
-            GXDLMSActivityCalendar result = service.readActivityCalendar();
+            GXDLMSActivityCalendar result = client.readActivityCalendar();
 
             assertThat(result.getLogicalName()).isEqualTo("0.0.13.0.0.255");
             assertThat(result.getCalendarNameActive()).isEqualTo("TariffA");
@@ -337,7 +359,10 @@ class CosemMeterServiceTest {
 
         @Test
         void activatePassiveCalendarInvokesMethod1() throws DlmsCommunicationException {
-            service.activatePassiveCalendar();
+            doReturn(null).when(client).invokeMethod(
+                    any(GXDLMSActivityCalendar.class), eq(1), eq(0), eq(DataType.INT8));
+
+            client.activatePassiveCalendar();
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).invokeMethod(captor.capture(), eq(1), eq(0), eq(DataType.INT8));
@@ -356,7 +381,10 @@ class CosemMeterServiceTest {
 
         @Test
         void executeScriptInvokesMethod1WithScriptId() throws DlmsCommunicationException {
-            service.executeScript("0.0.10.0.0.255", 42);
+            doReturn(null).when(client).invokeMethod(
+                    any(GXDLMSScriptTable.class), eq(1), eq(42), eq(DataType.UINT16));
+
+            client.executeScript("0.0.10.0.0.255", 42);
 
             ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
             verify(client).invokeMethod(captor.capture(), eq(1), eq(42), eq(DataType.UINT16));
@@ -381,7 +409,7 @@ class CosemMeterServiceTest {
                 return null;
             }).when(client).readAttribute(any(GXDLMSSecuritySetup.class), eq(2));
 
-            Set<SecurityPolicy> result = service.readSecurityPolicy();
+            Set<SecurityPolicy> result = client.readSecurityPolicy();
 
             assertThat(result).containsExactlyInAnyOrder(
                     SecurityPolicy.AUTHENTICATED, SecurityPolicy.ENCRYPTED);
@@ -399,7 +427,7 @@ class CosemMeterServiceTest {
                 return null;
             }).when(client).readAttribute(any(GXDLMSSecuritySetup.class), eq(3));
 
-            SecuritySuite result = service.readSecuritySuite();
+            SecuritySuite result = client.readSecuritySuite();
 
             assertThat(result).isEqualTo(SecuritySuite.SUITE_0);
         }
@@ -417,7 +445,7 @@ class CosemMeterServiceTest {
             doThrow(new DlmsCommunicationException("valve error", 1))
                     .when(client).invokeMethod(any(), eq(1), eq(0), eq(DataType.INT8));
 
-            assertThatThrownBy(() -> service.disconnectValve())
+            assertThatThrownBy(() -> client.disconnectValve())
                     .isInstanceOf(DlmsCommunicationException.class)
                     .hasMessageContaining("valve error");
         }
@@ -427,7 +455,7 @@ class CosemMeterServiceTest {
             doThrow(new DlmsCommunicationException("write error", 2))
                     .when(client).writeAttribute(any(GXDLMSClock.class), eq(2));
 
-            assertThatThrownBy(() -> service.setClock(Instant.now()))
+            assertThatThrownBy(() -> client.setClock(Instant.now()))
                     .isInstanceOf(DlmsCommunicationException.class)
                     .hasMessageContaining("write error");
         }
@@ -438,9 +466,10 @@ class CosemMeterServiceTest {
             doThrow(new DlmsCommunicationException("read error", 3))
                     .when(client).readAttribute(any(GXDLMSExtendedRegister.class), eq(2));
 
-            assertThatThrownBy(() -> service.readExtendedRegister("1.0.1.8.0.255"))
+            assertThatThrownBy(() -> client.readExtendedRegister("1.0.1.8.0.255"))
                     .isInstanceOf(DlmsCommunicationException.class)
                     .hasMessageContaining("read error");
         }
     }
+
 }

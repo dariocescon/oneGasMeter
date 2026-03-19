@@ -1,31 +1,44 @@
 package com.aton.proj.oneGasMeter.dlms;
 
 import com.aton.proj.oneGasMeter.config.DlmsClientConfig;
+import com.aton.proj.oneGasMeter.cosem.model.DemandReading;
+import com.aton.proj.oneGasMeter.cosem.model.ExtendedReading;
+import com.aton.proj.oneGasMeter.cosem.model.ValveState;
 import com.aton.proj.oneGasMeter.dlms.transport.DlmsTransport;
 import com.aton.proj.oneGasMeter.exception.DlmsCommunicationException;
 import com.aton.proj.oneGasMeter.model.MeterReading;
 import gurux.dlms.GXDLMSClient;
+import gurux.dlms.GXDateTime;
 import gurux.dlms.GXReplyData;
 import gurux.dlms.enums.DataType;
 import gurux.dlms.enums.InterfaceType;
+import gurux.dlms.objects.GXDLMSActivityCalendar;
 import gurux.dlms.objects.GXDLMSClock;
 import gurux.dlms.objects.GXDLMSData;
+import gurux.dlms.objects.GXDLMSDemandRegister;
+import gurux.dlms.objects.GXDLMSDisconnectControl;
+import gurux.dlms.objects.GXDLMSExtendedRegister;
 import gurux.dlms.objects.GXDLMSObject;
 import gurux.dlms.objects.GXDLMSObjectCollection;
 import gurux.dlms.objects.GXDLMSProfileGeneric;
 import gurux.dlms.objects.GXDLMSRegister;
+import gurux.dlms.objects.GXDLMSScriptTable;
+import gurux.dlms.objects.GXDLMSSecuritySetup;
+import gurux.dlms.objects.enums.SecurityPolicy;
+import gurux.dlms.objects.enums.SecuritySuite;
 
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
+import java.util.Set;
 
 /**
  * High-level DLMS/COSEM meter client.
  * <p>
  * Combines a {@link DlmsTransport} (physical channel) with the gurux.dlms
- * {@link GXDLMSClient} (protocol engine) to provide a simple API for:
+ * {@link GXDLMSClient} (protocol engine) to provide a unified API for:
  * <ul>
  *   <li>Connection management ({@link #connect()} / {@link #disconnect()})</li>
  *   <li>Object discovery ({@link #getObjects()})</li>
@@ -33,9 +46,13 @@ import java.util.List;
  *   <li>Reading generic data objects ({@link #readData(String)})</li>
  *   <li>Reading the meter clock ({@link #readClock()})</li>
  *   <li>Reading profile-generic (load profile) data ({@link #readProfileGeneric(String, Date, Date)})</li>
- *   <li>Generic attribute reading ({@link #readAttribute(GXDLMSObject, int)})</li>
- *   <li>Attribute writing / SET ({@link #writeAttribute(GXDLMSObject, int)})</li>
- *   <li>Method invocation / ACTION ({@link #invokeMethod(GXDLMSObject, int, Object, DataType)})</li>
+ *   <li>COSEM Clock operations ({@link #syncClock()}, {@link #setClock(Instant)})</li>
+ *   <li>Disconnect Control ({@link #disconnectValve()}, {@link #reconnectValve()}, {@link #getValveState()})</li>
+ *   <li>Extended Register ({@link #readExtendedRegister(String)})</li>
+ *   <li>Demand Register ({@link #readDemandRegister(String)}, {@link #resetDemandRegister(String)})</li>
+ *   <li>Activity Calendar ({@link #readActivityCalendar()}, {@link #activatePassiveCalendar()})</li>
+ *   <li>Script Table ({@link #executeScript(String, int)})</li>
+ *   <li>Security Setup ({@link #readSecurityPolicy()}, {@link #readSecuritySuite()})</li>
  * </ul>
  * </p>
  *
@@ -46,6 +63,26 @@ import java.util.List;
  * </p>
  */
 public class DlmsMeterClient {
+
+    // -----------------------------------------------------------------------
+    // OBIS codes standard
+    // -----------------------------------------------------------------------
+
+    /** OBIS code standard per il clock del contatore. */
+    private static final String CLOCK_OBIS = "0.0.1.0.0.255";
+
+    /** OBIS code standard per il Disconnect Control. */
+    private static final String DISCONNECT_CONTROL_OBIS = "0.0.96.3.10.255";
+
+    /** OBIS code standard per l'Activity Calendar. */
+    private static final String ACTIVITY_CALENDAR_OBIS = "0.0.13.0.0.255";
+
+    /** OBIS code standard per il Security Setup. */
+    private static final String SECURITY_SETUP_OBIS = "0.0.43.0.0.255";
+
+    // -----------------------------------------------------------------------
+    // Fields
+    // -----------------------------------------------------------------------
 
     private final DlmsClientConfig config;
     private final DlmsTransport transport;
@@ -68,6 +105,10 @@ public class DlmsMeterClient {
                 config.getPassword(),
                 config.getProtocolType().getInterfaceType());
     }
+
+    // -----------------------------------------------------------------------
+    // Connection management
+    // -----------------------------------------------------------------------
 
     /**
      * Establishes a DLMS/COSEM association with the meter.
@@ -163,6 +204,10 @@ public class DlmsMeterClient {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // DLMS object discovery
+    // -----------------------------------------------------------------------
+
     /**
      * Retrieves the list of all DLMS objects supported by the meter.
      * <p>
@@ -185,6 +230,10 @@ public class DlmsMeterClient {
             throw new DlmsCommunicationException("Failed to read object list", e);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // DLMS register reading
+    // -----------------------------------------------------------------------
 
     /**
      * Reads a DLMS Register object (class 3) by its OBIS code.
@@ -260,7 +309,7 @@ public class DlmsMeterClient {
      */
     public Instant readClock() throws DlmsCommunicationException {
         try {
-            GXDLMSClock clock = new GXDLMSClock("0.0.1.0.0.255");
+            GXDLMSClock clock = new GXDLMSClock(CLOCK_OBIS);
             GXReplyData reply = sendReceive(gxClient.read(clock, 2));
             gxClient.updateValue(clock, 2, reply.getValue());
 
@@ -315,89 +364,314 @@ public class DlmsMeterClient {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // COSEM: Clock (classe 8, OBIS 0.0.1.0.0.255)
+    // -----------------------------------------------------------------------
+
     /**
-     * Reads a single attribute from a DLMS/COSEM object.
-     * <p>
-     * This is the generic GET operation: it sends a read request for the given
-     * attribute index and populates the object using
-     * {@link GXDLMSClient#updateValue}.
-     * </p>
+     * Sincronizza l'orologio del contatore con l'ora corrente del sistema.
      *
-     * @param object    the target DLMS object (must have the OBIS code set)
-     * @param attribute the attribute index to read (1-based)
-     * @return the raw value returned by the meter
-     * @throws DlmsCommunicationException if the read fails
+     * @throws DlmsCommunicationException se la scrittura fallisce
      */
-    public Object readAttribute(GXDLMSObject object, int attribute)
-            throws DlmsCommunicationException {
-        try {
-            GXReplyData reply = sendReceive(gxClient.read(object, attribute));
-            gxClient.updateValue(object, attribute, reply.getValue());
-            return reply.getValue();
-        } catch (DlmsCommunicationException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new DlmsCommunicationException(
-                    "Failed to read attribute " + attribute
-                            + " of " + object.getLogicalName(), e);
-        }
+    public void syncClock() throws DlmsCommunicationException {
+        setClock(Instant.now());
     }
 
     /**
-     * Writes (SET) a single attribute to a DLMS/COSEM object.
-     * <p>
-     * The caller must populate the attribute value on the object <em>before</em>
-     * invoking this method (e.g. {@code clock.setTime(...)}).
-     * Internally calls {@link GXDLMSClient#write(GXDLMSObject, int)}.
-     * </p>
+     * Imposta l'orologio del contatore a un istante specifico.
      *
-     * @param object    the target DLMS object with the attribute already set
-     * @param attribute the attribute index to write (1-based)
-     * @throws DlmsCommunicationException if the write fails
+     * @param time l'ora da impostare
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     * @throws IllegalArgumentException se {@code time} e' {@code null}
      */
-    public void writeAttribute(GXDLMSObject object, int attribute)
-            throws DlmsCommunicationException {
-        try {
-            sendReceive(gxClient.write(object, attribute));
-        } catch (DlmsCommunicationException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new DlmsCommunicationException(
-                    "Failed to write attribute " + attribute
-                            + " of " + object.getLogicalName(), e);
+    public void setClock(Instant time) throws DlmsCommunicationException {
+        if (time == null) {
+            throw new IllegalArgumentException("Time must not be null");
         }
+        GXDLMSClock clock = new GXDLMSClock(CLOCK_OBIS);
+        clock.setTime(Date.from(time));
+        writeAttribute(clock, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Disconnect Control (classe 70, OBIS 0.0.96.3.10.255)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Chiude la valvola del gas (remote disconnect) usando l'OBIS standard.
+     *
+     * @throws DlmsCommunicationException se l'operazione fallisce
+     */
+    public void disconnectValve() throws DlmsCommunicationException {
+        disconnectValve(DISCONNECT_CONTROL_OBIS);
     }
 
     /**
-     * Invokes a method (ACTION) on a DLMS/COSEM object.
+     * Chiude la valvola del gas (remote disconnect) usando un OBIS specifico.
+     *
+     * @param obisCode OBIS code del Disconnect Control
+     * @throws DlmsCommunicationException se l'operazione fallisce
+     */
+    public void disconnectValve(String obisCode) throws DlmsCommunicationException {
+        GXDLMSDisconnectControl dc = new GXDLMSDisconnectControl(obisCode);
+        invokeMethod(dc, 1, 0, DataType.INT8);
+    }
+
+    /**
+     * Riapre la valvola del gas (remote reconnect) usando l'OBIS standard.
+     *
+     * @throws DlmsCommunicationException se l'operazione fallisce
+     */
+    public void reconnectValve() throws DlmsCommunicationException {
+        reconnectValve(DISCONNECT_CONTROL_OBIS);
+    }
+
+    /**
+     * Riapre la valvola del gas (remote reconnect) usando un OBIS specifico.
+     *
+     * @param obisCode OBIS code del Disconnect Control
+     * @throws DlmsCommunicationException se l'operazione fallisce
+     */
+    public void reconnectValve(String obisCode) throws DlmsCommunicationException {
+        GXDLMSDisconnectControl dc = new GXDLMSDisconnectControl(obisCode);
+        invokeMethod(dc, 2, 0, DataType.INT8);
+    }
+
+    /**
+     * Legge lo stato corrente della valvola usando l'OBIS standard.
+     *
+     * @return stato della valvola
+     * @throws DlmsCommunicationException se la lettura fallisce
+     */
+    public ValveState getValveState() throws DlmsCommunicationException {
+        return getValveState(DISCONNECT_CONTROL_OBIS);
+    }
+
+    /**
+     * Legge lo stato corrente della valvola usando un OBIS specifico.
+     *
+     * @param obisCode OBIS code del Disconnect Control
+     * @return stato della valvola
+     * @throws DlmsCommunicationException se la lettura fallisce
+     */
+    public ValveState getValveState(String obisCode) throws DlmsCommunicationException {
+        GXDLMSDisconnectControl dc = new GXDLMSDisconnectControl(obisCode);
+        readAttribute(dc, 4);
+        return ValveState.from(dc.getControlState());
+    }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Extended Register (classe 4)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Legge un Extended Register (classe COSEM 4) completo.
      * <p>
-     * Used for operations such as valve disconnect/reconnect, demand register
-     * reset, script execution, etc.
-     * Internally calls {@link GXDLMSClient#method(GXDLMSObject, int, Object, DataType)}.
+     * Legge gli attributi 2 (value), 3 (scaler+unit), 4 (status) e 5 (captureTime)
+     * e restituisce un {@link ExtendedReading} immutabile.
      * </p>
      *
-     * @param object      the target DLMS object
-     * @param methodIndex the method index (1-based)
-     * @param param       parameter to pass (e.g. {@code 0} for no-arg methods)
-     * @param dataType    DLMS data type of {@code param}
-     * @return the value returned by the meter (may be {@code null})
-     * @throws DlmsCommunicationException if the method invocation fails
+     * @param obisCode OBIS code del registro esteso
+     * @return lettura completa con value, scaler, unit, status e captureTime
+     * @throws DlmsCommunicationException se la lettura fallisce
      */
-    public Object invokeMethod(GXDLMSObject object, int methodIndex,
-                               Object param, DataType dataType)
-            throws DlmsCommunicationException {
-        try {
-            byte[][] request = gxClient.method(object, methodIndex, param, dataType);
-            GXReplyData reply = sendReceive(request);
-            return reply.getValue();
-        } catch (DlmsCommunicationException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new DlmsCommunicationException(
-                    "Failed to invoke method " + methodIndex
-                            + " on " + object.getLogicalName(), e);
+    public ExtendedReading readExtendedRegister(String obisCode) throws DlmsCommunicationException {
+        GXDLMSExtendedRegister reg = new GXDLMSExtendedRegister(obisCode);
+
+        // value (attr 2)
+        readAttribute(reg, 2);
+        // scaler + unit (attr 3)
+        readAttribute(reg, 3);
+        // status (attr 4)
+        readAttribute(reg, 4);
+        // captureTime (attr 5)
+        readAttribute(reg, 5);
+
+        Instant captureInstant = null;
+        GXDateTime captureDateTime = reg.getCaptureTime();
+        if (captureDateTime != null && captureDateTime.getMeterCalendar() != null) {
+            captureInstant = captureDateTime.getMeterCalendar().toInstant();
         }
+
+        return ExtendedReading.builder()
+                .obisCode(obisCode)
+                .value(reg.getValue())
+                .scaler(reg.getScaler())
+                .unit(reg.getUnit() != null ? reg.getUnit().toString() : "")
+                .status(reg.getStatus())
+                .captureTime(captureInstant)
+                .readTimestamp(Instant.now())
+                .build();
     }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Demand Register (classe 5)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Legge un Demand Register (classe COSEM 5) completo.
+     * <p>
+     * Legge gli attributi da 2 a 9 e restituisce un {@link DemandReading} immutabile.
+     * </p>
+     *
+     * @param obisCode OBIS code del registro di domanda
+     * @return lettura completa con medie, scaler, unit, status, tempi e configurazione periodi
+     * @throws DlmsCommunicationException se la lettura fallisce
+     */
+    public DemandReading readDemandRegister(String obisCode) throws DlmsCommunicationException {
+        GXDLMSDemandRegister reg = new GXDLMSDemandRegister(obisCode);
+
+        // currentAverageValue (attr 2)
+        readAttribute(reg, 2);
+        // lastAverageValue (attr 3)
+        readAttribute(reg, 3);
+        // scaler + unit (attr 4)
+        readAttribute(reg, 4);
+        // status (attr 5)
+        readAttribute(reg, 5);
+        // captureTime (attr 6)
+        readAttribute(reg, 6);
+        // startTimeCurrent (attr 7)
+        readAttribute(reg, 7);
+        // period (attr 8)
+        readAttribute(reg, 8);
+        // numberOfPeriods (attr 9)
+        readAttribute(reg, 9);
+
+        return DemandReading.builder()
+                .obisCode(obisCode)
+                .currentAverageValue(reg.getCurrentAverageValue())
+                .lastAverageValue(reg.getLastAverageValue())
+                .scaler(reg.getScaler())
+                .unit(reg.getUnit() != null ? reg.getUnit().toString() : "")
+                .status(reg.getStatus())
+                .captureTime(toInstant(reg.getCaptureTime()))
+                .startTimeCurrent(toInstant(reg.getStartTimeCurrent()))
+                .period(reg.getPeriod())
+                .numberOfPeriods(reg.getNumberOfPeriods())
+                .readTimestamp(Instant.now())
+                .build();
+    }
+
+    /**
+     * Resetta un Demand Register (metodo 1).
+     *
+     * @param obisCode OBIS code del registro
+     * @throws DlmsCommunicationException se l'operazione fallisce
+     */
+    public void resetDemandRegister(String obisCode) throws DlmsCommunicationException {
+        GXDLMSDemandRegister reg = new GXDLMSDemandRegister(obisCode);
+        invokeMethod(reg, 1, 0, DataType.INT8);
+    }
+
+    /**
+     * Avanza al periodo successivo di un Demand Register (metodo 2).
+     *
+     * @param obisCode OBIS code del registro
+     * @throws DlmsCommunicationException se l'operazione fallisce
+     */
+    public void nextPeriodDemandRegister(String obisCode) throws DlmsCommunicationException {
+        GXDLMSDemandRegister reg = new GXDLMSDemandRegister(obisCode);
+        invokeMethod(reg, 2, 0, DataType.INT8);
+    }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Activity Calendar (classe 20, OBIS 0.0.13.0.0.255)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Legge l'Activity Calendar completo dal contatore.
+     * <p>
+     * Legge gli attributi da 2 a 10. Restituisce l'oggetto gurux
+     * {@link GXDLMSActivityCalendar} direttamente, dato che il modello dati
+     * del calendario (season/week/day profiles) e' complesso.
+     * </p>
+     *
+     * @return l'oggetto Activity Calendar popolato
+     * @throws DlmsCommunicationException se la lettura fallisce
+     */
+    public GXDLMSActivityCalendar readActivityCalendar() throws DlmsCommunicationException {
+        GXDLMSActivityCalendar cal = new GXDLMSActivityCalendar(ACTIVITY_CALENDAR_OBIS);
+
+        // calendarNameActive (attr 2)
+        readAttribute(cal, 2);
+        // seasonProfileActive (attr 3)
+        readAttribute(cal, 3);
+        // weekProfileTableActive (attr 4)
+        readAttribute(cal, 4);
+        // dayProfileTableActive (attr 5)
+        readAttribute(cal, 5);
+        // calendarNamePassive (attr 6)
+        readAttribute(cal, 6);
+        // seasonProfilePassive (attr 7)
+        readAttribute(cal, 7);
+        // weekProfileTablePassive (attr 8)
+        readAttribute(cal, 8);
+        // dayProfileTablePassive (attr 9)
+        readAttribute(cal, 9);
+        // activatePassiveCalendarTime (attr 10)
+        readAttribute(cal, 10);
+
+        return cal;
+    }
+
+    /**
+     * Attiva il calendario passivo (metodo 1 dell'Activity Calendar).
+     *
+     * @throws DlmsCommunicationException se l'operazione fallisce
+     */
+    public void activatePassiveCalendar() throws DlmsCommunicationException {
+        GXDLMSActivityCalendar cal = new GXDLMSActivityCalendar(ACTIVITY_CALENDAR_OBIS);
+        invokeMethod(cal, 1, 0, DataType.INT8);
+    }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Script Table (classe 9)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Esegue uno script dalla Script Table.
+     *
+     * @param obisCode OBIS code della Script Table
+     * @param scriptId ID dello script da eseguire
+     * @throws DlmsCommunicationException se l'esecuzione fallisce
+     */
+    public void executeScript(String obisCode, int scriptId) throws DlmsCommunicationException {
+        GXDLMSScriptTable table = new GXDLMSScriptTable(obisCode);
+        invokeMethod(table, 1, scriptId, DataType.UINT16);
+    }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Security Setup (classe 64, OBIS 0.0.43.0.0.255) – solo lettura
+    // -----------------------------------------------------------------------
+
+    /**
+     * Legge la security policy corrente del contatore.
+     *
+     * @return set di {@link SecurityPolicy} attive
+     * @throws DlmsCommunicationException se la lettura fallisce
+     */
+    public Set<SecurityPolicy> readSecurityPolicy() throws DlmsCommunicationException {
+        GXDLMSSecuritySetup sec = new GXDLMSSecuritySetup(SECURITY_SETUP_OBIS);
+        readAttribute(sec, 2);
+        return sec.getSecurityPolicy();
+    }
+
+    /**
+     * Legge la security suite corrente del contatore.
+     *
+     * @return la {@link SecuritySuite} attiva
+     * @throws DlmsCommunicationException se la lettura fallisce
+     */
+    public SecuritySuite readSecuritySuite() throws DlmsCommunicationException {
+        GXDLMSSecuritySetup sec = new GXDLMSSecuritySetup(SECURITY_SETUP_OBIS);
+        readAttribute(sec, 3);
+        return sec.getSecuritySuite();
+    }
+
+    // -----------------------------------------------------------------------
+    // Status
+    // -----------------------------------------------------------------------
 
     /**
      * Returns {@code true} if the underlying transport is currently connected.
@@ -418,7 +692,98 @@ public class DlmsMeterClient {
     }
 
     // -----------------------------------------------------------------------
-    // Internal helpers
+    // Generic DLMS operations (package-private, visible for testing)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Reads a single attribute from a DLMS/COSEM object (GET).
+     * <p>
+     * Sends a read request for the given attribute index and populates the
+     * object using {@link GXDLMSClient#updateValue}.
+     * </p>
+     * <p><strong>Package-private:</strong> non fa parte dell'API pubblica.
+     * Visibilita' limitata per consentire il testing con Mockito Spy.</p>
+     *
+     * @param object    the target DLMS object (must have the OBIS code set)
+     * @param attribute the attribute index to read (1-based)
+     * @return the raw value returned by the meter
+     * @throws DlmsCommunicationException if the read fails
+     */
+    Object readAttribute(GXDLMSObject object, int attribute)
+            throws DlmsCommunicationException {
+        try {
+            GXReplyData reply = sendReceive(gxClient.read(object, attribute));
+            gxClient.updateValue(object, attribute, reply.getValue());
+            return reply.getValue();
+        } catch (DlmsCommunicationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new DlmsCommunicationException(
+                    "Failed to read attribute " + attribute
+                            + " of " + object.getLogicalName(), e);
+        }
+    }
+
+    /**
+     * Writes (SET) a single attribute to a DLMS/COSEM object.
+     * <p>
+     * The caller must populate the attribute value on the object <em>before</em>
+     * invoking this method.
+     * </p>
+     * <p><strong>Package-private:</strong> non fa parte dell'API pubblica.
+     * Visibilita' limitata per consentire il testing con Mockito Spy.</p>
+     *
+     * @param object    the target DLMS object with the attribute already set
+     * @param attribute the attribute index to write (1-based)
+     * @throws DlmsCommunicationException if the write fails
+     */
+    void writeAttribute(GXDLMSObject object, int attribute)
+            throws DlmsCommunicationException {
+        try {
+            sendReceive(gxClient.write(object, attribute));
+        } catch (DlmsCommunicationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new DlmsCommunicationException(
+                    "Failed to write attribute " + attribute
+                            + " of " + object.getLogicalName(), e);
+        }
+    }
+
+    /**
+     * Invokes a method (ACTION) on a DLMS/COSEM object.
+     * <p>
+     * Used for operations such as valve disconnect/reconnect, demand register
+     * reset, script execution, etc.
+     * </p>
+     * <p><strong>Package-private:</strong> non fa parte dell'API pubblica.
+     * Visibilita' limitata per consentire il testing con Mockito Spy.</p>
+     *
+     * @param object      the target DLMS object
+     * @param methodIndex the method index (1-based)
+     * @param param       parameter to pass (e.g. {@code 0} for no-arg methods)
+     * @param dataType    DLMS data type of {@code param}
+     * @return the value returned by the meter (may be {@code null})
+     * @throws DlmsCommunicationException if the method invocation fails
+     */
+    Object invokeMethod(GXDLMSObject object, int methodIndex,
+                               Object param, DataType dataType)
+            throws DlmsCommunicationException {
+        try {
+            byte[][] request = gxClient.method(object, methodIndex, param, dataType);
+            GXReplyData reply = sendReceive(request);
+            return reply.getValue();
+        } catch (DlmsCommunicationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new DlmsCommunicationException(
+                    "Failed to invoke method " + methodIndex
+                            + " on " + object.getLogicalName(), e);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
     // -----------------------------------------------------------------------
 
     /**
@@ -464,5 +829,15 @@ public class DlmsMeterClient {
         }
 
         return reply;
+    }
+
+    /**
+     * Converte un {@link GXDateTime} in {@link Instant}, gestendo i casi null.
+     */
+    private static Instant toInstant(GXDateTime dateTime) {
+        if (dateTime != null && dateTime.getMeterCalendar() != null) {
+            return dateTime.getMeterCalendar().toInstant();
+        }
+        return null;
     }
 }
