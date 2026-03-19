@@ -24,6 +24,8 @@ import gurux.dlms.objects.GXDLMSProfileGeneric;
 import gurux.dlms.objects.GXDLMSRegister;
 import gurux.dlms.objects.GXDLMSScriptTable;
 import gurux.dlms.objects.GXDLMSSecuritySetup;
+import gurux.dlms.objects.enums.ClockBase;
+import gurux.dlms.objects.enums.ControlMode;
 import gurux.dlms.objects.enums.SecurityPolicy;
 import gurux.dlms.objects.enums.SecuritySuite;
 
@@ -46,13 +48,20 @@ import java.util.Set;
  *   <li>Reading generic data objects ({@link #readData(String)})</li>
  *   <li>Reading the meter clock ({@link #readClock()})</li>
  *   <li>Reading profile-generic (load profile) data ({@link #readProfileGeneric(String, Date, Date)})</li>
- *   <li>COSEM Clock operations ({@link #syncClock()}, {@link #setClock(Instant)})</li>
- *   <li>Disconnect Control ({@link #disconnectValve()}, {@link #reconnectValve()}, {@link #getValveState()})</li>
+ *   <li>COSEM Clock operations ({@link #syncClock()}, {@link #setClock(Instant)},
+ *       {@link #setTimeZone(int)}, {@link #setDaylightSavings(boolean, GXDateTime, GXDateTime, int)},
+ *       {@link #setClockBase(ClockBase)})</li>
+ *   <li>Disconnect Control ({@link #disconnectValve()}, {@link #reconnectValve()},
+ *       {@link #getValveState()}, {@link #setControlMode(ControlMode)})</li>
  *   <li>Extended Register ({@link #readExtendedRegister(String)})</li>
  *   <li>Demand Register ({@link #readDemandRegister(String)}, {@link #resetDemandRegister(String)})</li>
- *   <li>Activity Calendar ({@link #readActivityCalendar()}, {@link #activatePassiveCalendar()})</li>
+ *   <li>Activity Calendar ({@link #readActivityCalendar()}, {@link #writePassiveCalendar(GXDLMSActivityCalendar)},
+ *       {@link #activatePassiveCalendar()})</li>
  *   <li>Script Table ({@link #executeScript(String, int)})</li>
- *   <li>Security Setup ({@link #readSecurityPolicy()}, {@link #readSecuritySuite()})</li>
+ *   <li>Security Setup ({@link #readSecurityPolicy()}, {@link #readSecuritySuite()},
+ *       {@link #setSecurityPolicy(Set)}, {@link #setSecuritySuite(SecuritySuite)})</li>
+ *   <li>Profile Generic config ({@link #setCapturePeriod(String, long)})</li>
+ *   <li>Data write ({@link #writeData(String, Object)})</li>
  * </ul>
  * </p>
  *
@@ -393,6 +402,75 @@ public class DlmsMeterClient {
         writeAttribute(clock, 2);
     }
 
+    /**
+     * Imposta il fuso orario dell'orologio del contatore (attributo 3).
+     *
+     * @param offsetMinutes scostamento UTC in minuti (es. 60 = UTC+1, -300 = UTC-5)
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     */
+    public void setTimeZone(int offsetMinutes) throws DlmsCommunicationException {
+        GXDLMSClock clock = new GXDLMSClock(CLOCK_OBIS);
+        clock.setTimeZone(offsetMinutes);
+        writeAttribute(clock, 3);
+    }
+
+    /**
+     * Configura il passaggio all'ora legale (DST) del contatore (attributi 5–8).
+     * <p>
+     * Scrive i quattro attributi DST in sequenza:
+     * <ul>
+     *   <li>Attr 5 — {@code dstBegin}: istante di inizio ora legale</li>
+     *   <li>Attr 6 — {@code dstEnd}: istante di fine ora legale</li>
+     *   <li>Attr 7 — {@code deviation}: scostamento DST in minuti (tipicamente 60)</li>
+     *   <li>Attr 8 — {@code enabled}: abilitazione del DST</li>
+     * </ul>
+     * </p>
+     *
+     * @param enabled         {@code true} per abilitare il DST
+     * @param begin           istante di inizio ora legale
+     * @param end             istante di fine ora legale
+     * @param deviationMinutes scostamento DST in minuti
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     */
+    public void setDaylightSavings(boolean enabled, GXDateTime begin, GXDateTime end,
+                                   int deviationMinutes)
+            throws DlmsCommunicationException {
+        GXDLMSClock clock = new GXDLMSClock(CLOCK_OBIS);
+        clock.setBegin(begin);
+        clock.setEnd(end);
+        clock.setDeviation(deviationMinutes);
+        clock.setEnabled(enabled);
+        writeAttribute(clock, 5);   // DST begin
+        writeAttribute(clock, 6);   // DST end
+        writeAttribute(clock, 7);   // DST deviation
+        writeAttribute(clock, 8);   // DST enabled
+    }
+
+    /**
+     * Imposta la sorgente di riferimento dell'orologio (attributo 9).
+     * <p>
+     * I valori tipici sono:
+     * <ul>
+     *   <li>{@link ClockBase#NONE} — nessuna sorgente esterna</li>
+     *   <li>{@link ClockBase#CRYSTAL} — oscillatore al quarzo interno</li>
+     *   <li>{@link ClockBase#GPS} — sincronizzazione GPS</li>
+     *   <li>{@link ClockBase#RADIO} — segnale radio orario</li>
+     * </ul>
+     * </p>
+     *
+     * @param clockBase sorgente di riferimento da impostare
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     * @throws IllegalArgumentException   se {@code clockBase} e' {@code null}
+     */
+    public void setClockBase(ClockBase clockBase) throws DlmsCommunicationException {
+        if (clockBase == null) {
+            throw new IllegalArgumentException("ClockBase must not be null");
+        }
+        GXDLMSClock clock = new GXDLMSClock(CLOCK_OBIS);
+        clock.setClockBase(clockBase);
+        writeAttribute(clock, 9);
+    }
+
     // -----------------------------------------------------------------------
     // COSEM: Disconnect Control (classe 70, OBIS 0.0.96.3.10.255)
     // -----------------------------------------------------------------------
@@ -458,6 +536,46 @@ public class DlmsMeterClient {
         GXDLMSDisconnectControl dc = new GXDLMSDisconnectControl(obisCode);
         readAttribute(dc, 4);
         return ValveState.from(dc.getControlState());
+    }
+
+    /**
+     * Imposta la modalità di controllo del Disconnect Control usando l'OBIS standard.
+     * <p>
+     * La control mode determina se il dispositivo può essere comandato da remoto
+     * e come gestisce le condizioni di riconnessione automatica:
+     * <ul>
+     *   <li>{@link ControlMode#NONE} — sempre connesso, nessun controllo remoto</li>
+     *   <li>{@link ControlMode#MODE_1} — controllo remoto con verifica dello stato prima della riconnessione</li>
+     *   <li>{@link ControlMode#MODE_2} — controllo remoto con override manuale permesso</li>
+     *   <li>{@link ControlMode#MODE_3} — controllo remoto, riconnessione solo via comando</li>
+     *   <li>{@link ControlMode#MODE_4} — controllo remoto con riconnessione automatica</li>
+     * </ul>
+     * </p>
+     *
+     * @param controlMode modalità di controllo da impostare
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     * @throws IllegalArgumentException   se {@code controlMode} e' {@code null}
+     */
+    public void setControlMode(ControlMode controlMode) throws DlmsCommunicationException {
+        setControlMode(DISCONNECT_CONTROL_OBIS, controlMode);
+    }
+
+    /**
+     * Imposta la modalità di controllo del Disconnect Control usando un OBIS specifico.
+     *
+     * @param obisCode    OBIS code del Disconnect Control
+     * @param controlMode modalità di controllo da impostare
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     * @throws IllegalArgumentException   se {@code controlMode} e' {@code null}
+     */
+    public void setControlMode(String obisCode, ControlMode controlMode)
+            throws DlmsCommunicationException {
+        if (controlMode == null) {
+            throw new IllegalArgumentException("ControlMode must not be null");
+        }
+        GXDLMSDisconnectControl dc = new GXDLMSDisconnectControl(obisCode);
+        dc.setControlMode(controlMode);
+        writeAttribute(dc, 3);
     }
 
     // -----------------------------------------------------------------------
@@ -625,6 +743,44 @@ public class DlmsMeterClient {
         invokeMethod(cal, 1, 0, DataType.INT8);
     }
 
+    /**
+     * Scrive il profilo passivo dell'Activity Calendar sul contatore.
+     * <p>
+     * Scrive gli attributi 6–10 dall'oggetto {@link GXDLMSActivityCalendar} fornito:
+     * <ul>
+     *   <li>Attr 6 — {@code calendarNamePassive}: nome del calendario passivo</li>
+     *   <li>Attr 7 — {@code seasonProfilePassive}: profili di stagione passivi</li>
+     *   <li>Attr 8 — {@code weekProfileTablePassive}: profili settimanali passivi</li>
+     *   <li>Attr 9 — {@code dayProfileTablePassive}: profili giornalieri passivi</li>
+     *   <li>Attr 10 — {@code activatePassiveCalendarTime}: ora di attivazione automatica</li>
+     * </ul>
+     * </p>
+     * <p>
+     * Per attivare il calendario scritto, chiamare successivamente
+     * {@link #activatePassiveCalendar()}.
+     * </p>
+     *
+     * @param calendar oggetto Activity Calendar con il profilo passivo gia' configurato
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     * @throws IllegalArgumentException   se {@code calendar} e' {@code null}
+     */
+    public void writePassiveCalendar(GXDLMSActivityCalendar calendar)
+            throws DlmsCommunicationException {
+        if (calendar == null) {
+            throw new IllegalArgumentException("ActivityCalendar must not be null");
+        }
+        // calendarNamePassive (attr 6)
+        writeAttribute(calendar, 6);
+        // seasonProfilePassive (attr 7)
+        writeAttribute(calendar, 7);
+        // weekProfileTablePassive (attr 8)
+        writeAttribute(calendar, 8);
+        // dayProfileTablePassive (attr 9)
+        writeAttribute(calendar, 9);
+        // activatePassiveCalendarTime (attr 10)
+        writeAttribute(calendar, 10);
+    }
+
     // -----------------------------------------------------------------------
     // COSEM: Script Table (classe 9)
     // -----------------------------------------------------------------------
@@ -642,11 +798,11 @@ public class DlmsMeterClient {
     }
 
     // -----------------------------------------------------------------------
-    // COSEM: Security Setup (classe 64, OBIS 0.0.43.0.0.255) – solo lettura
+    // COSEM: Security Setup (classe 64, OBIS 0.0.43.0.0.255)
     // -----------------------------------------------------------------------
 
     /**
-     * Legge la security policy corrente del contatore.
+     * Legge la security policy corrente del contatore (attributo 2).
      *
      * @return set di {@link SecurityPolicy} attive
      * @throws DlmsCommunicationException se la lettura fallisce
@@ -658,7 +814,7 @@ public class DlmsMeterClient {
     }
 
     /**
-     * Legge la security suite corrente del contatore.
+     * Legge la security suite corrente del contatore (attributo 3).
      *
      * @return la {@link SecuritySuite} attiva
      * @throws DlmsCommunicationException se la lettura fallisce
@@ -667,6 +823,108 @@ public class DlmsMeterClient {
         GXDLMSSecuritySetup sec = new GXDLMSSecuritySetup(SECURITY_SETUP_OBIS);
         readAttribute(sec, 3);
         return sec.getSecuritySuite();
+    }
+
+    /**
+     * Imposta la security policy del contatore (attributo 2).
+     * <p>
+     * <strong>Attenzione:</strong> la modifica della security policy è un'operazione
+     * critica che può rendere il contatore irraggiungibile se non configurata correttamente.
+     * </p>
+     *
+     * @param policy set di {@link SecurityPolicy} da impostare
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     * @throws IllegalArgumentException   se {@code policy} e' {@code null}
+     */
+    public void setSecurityPolicy(Set<SecurityPolicy> policy) throws DlmsCommunicationException {
+        if (policy == null) {
+            throw new IllegalArgumentException("SecurityPolicy must not be null");
+        }
+        GXDLMSSecuritySetup sec = new GXDLMSSecuritySetup(SECURITY_SETUP_OBIS);
+        sec.setSecurityPolicy(policy);
+        writeAttribute(sec, 2);
+    }
+
+    /**
+     * Imposta la security suite del contatore (attributo 3).
+     * <p>
+     * <strong>Attenzione:</strong> la modifica della security suite è un'operazione
+     * critica. Assicurarsi che client e server supportino la suite selezionata.
+     * </p>
+     *
+     * @param suite la {@link SecuritySuite} da impostare
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     * @throws IllegalArgumentException   se {@code suite} e' {@code null}
+     */
+    public void setSecuritySuite(SecuritySuite suite) throws DlmsCommunicationException {
+        if (suite == null) {
+            throw new IllegalArgumentException("SecuritySuite must not be null");
+        }
+        GXDLMSSecuritySetup sec = new GXDLMSSecuritySetup(SECURITY_SETUP_OBIS);
+        sec.setSecuritySuite(suite);
+        writeAttribute(sec, 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Profile Generic (classe 7) — configurazione
+    // -----------------------------------------------------------------------
+
+    /**
+     * Imposta il periodo di acquisizione del Profile Generic (attributo 4).
+     * <p>
+     * Il periodo è espresso in secondi (0 = acquisizione su trigger, non periodica).
+     * </p>
+     *
+     * @param obisCode      OBIS code del Profile Generic
+     * @param periodSeconds periodo di acquisizione in secondi
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     */
+    public void setCapturePeriod(String obisCode, long periodSeconds)
+            throws DlmsCommunicationException {
+        GXDLMSProfileGeneric profile = new GXDLMSProfileGeneric(obisCode);
+        profile.setCapturePeriod(periodSeconds);
+        writeAttribute(profile, 4);
+    }
+
+    /**
+     * Configura la lista degli oggetti da acquisire nel Profile Generic (attributo 3).
+     * <p>
+     * <strong>Non ancora implementato.</strong> Richiede la conoscenza della lista di
+     * oggetti OBIS specifici del contatore. Da completare una volta note le specifiche
+     * del dispositivo.
+     * </p>
+     *
+     * @param obisCode OBIS code del Profile Generic
+     * @throws UnsupportedOperationException sempre — metodo non ancora implementato
+     */
+    public void setCaptureObjects(String obisCode) throws DlmsCommunicationException {
+        throw new UnsupportedOperationException(
+                "setCaptureObjects non ancora implementato: richiede la lista OBIS degli oggetti"
+                        + " da acquisire, specifica del contatore");
+    }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Data (classe 1) — scrittura
+    // -----------------------------------------------------------------------
+
+    /**
+     * Scrive il valore di un oggetto Data (classe COSEM 1) specifico del contatore.
+     * <p>
+     * Questo metodo è generico e può scrivere qualsiasi oggetto Data identificato
+     * dall'OBIS code. Gli OBIS code specifici del contatore (es. parametri di
+     * configurazione, soglie di allarme, impostazioni tariffarie) dovranno essere
+     * determinati a partire dalle specifiche del dispositivo.
+     * </p>
+     *
+     * @param obisCode OBIS code dell'oggetto Data
+     * @param value    valore da scrivere (il tipo deve essere compatibile con
+     *                 il tipo atteso dall'oggetto sul contatore)
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     */
+    public void writeData(String obisCode, Object value) throws DlmsCommunicationException {
+        GXDLMSData data = new GXDLMSData(obisCode);
+        data.setValue(value);
+        writeAttribute(data, 2);
     }
 
     // -----------------------------------------------------------------------

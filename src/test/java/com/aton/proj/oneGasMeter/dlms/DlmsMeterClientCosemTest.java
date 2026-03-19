@@ -12,12 +12,16 @@ import gurux.dlms.enums.DataType;
 import gurux.dlms.enums.Unit;
 import gurux.dlms.objects.GXDLMSActivityCalendar;
 import gurux.dlms.objects.GXDLMSClock;
+import gurux.dlms.objects.GXDLMSData;
 import gurux.dlms.objects.GXDLMSDemandRegister;
 import gurux.dlms.objects.GXDLMSDisconnectControl;
 import gurux.dlms.objects.GXDLMSExtendedRegister;
 import gurux.dlms.objects.GXDLMSObject;
+import gurux.dlms.objects.GXDLMSProfileGeneric;
 import gurux.dlms.objects.GXDLMSScriptTable;
 import gurux.dlms.objects.GXDLMSSecuritySetup;
+import gurux.dlms.objects.enums.ClockBase;
+import gurux.dlms.objects.enums.ControlMode;
 import gurux.dlms.objects.enums.ControlState;
 import gurux.dlms.objects.enums.SecurityPolicy;
 import gurux.dlms.objects.enums.SecuritySuite;
@@ -112,6 +116,73 @@ class DlmsMeterClientCosemTest {
             verify(client).writeAttribute(captor.capture(), eq(2));
             assertThat(captor.getValue()).isInstanceOf(GXDLMSClock.class);
         }
+
+        @Test
+        void setTimeZoneWritesAttribute3WithCorrectOffset() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSClock.class), eq(3));
+
+            client.setTimeZone(60);
+
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(3));
+
+            GXDLMSClock clock = (GXDLMSClock) captor.getValue();
+            assertThat(clock.getLogicalName()).isEqualTo("0.0.1.0.0.255");
+            assertThat(clock.getTimeZone()).isEqualTo(60);
+        }
+
+        @Test
+        void setDaylightSavingsWritesAttributes5to8() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSClock.class), anyInt());
+
+            GXDateTime begin = new GXDateTime(Date.from(Instant.parse("2026-03-29T01:00:00Z")));
+            GXDateTime end   = new GXDateTime(Date.from(Instant.parse("2026-10-25T01:00:00Z")));
+
+            client.setDaylightSavings(true, begin, end, 60);
+
+            verify(client).writeAttribute(any(GXDLMSClock.class), eq(5));
+            verify(client).writeAttribute(any(GXDLMSClock.class), eq(6));
+            verify(client).writeAttribute(any(GXDLMSClock.class), eq(7));
+            verify(client).writeAttribute(any(GXDLMSClock.class), eq(8));
+        }
+
+        @Test
+        void setDaylightSavingsSetsCorrectValuesOnClockObject() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSClock.class), anyInt());
+
+            GXDateTime begin = new GXDateTime(Date.from(Instant.parse("2026-03-29T01:00:00Z")));
+            GXDateTime end   = new GXDateTime(Date.from(Instant.parse("2026-10-25T01:00:00Z")));
+
+            client.setDaylightSavings(true, begin, end, 60);
+
+            // Capture the clock from the first write call (attr 5) and verify DST fields
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(5));
+            GXDLMSClock clock = (GXDLMSClock) captor.getValue();
+            assertThat(clock.getEnabled()).isTrue();
+            assertThat(clock.getDeviation()).isEqualTo(60);
+        }
+
+        @Test
+        void setClockBaseWritesAttribute9() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSClock.class), eq(9));
+
+            client.setClockBase(ClockBase.CRYSTAL);
+
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(9));
+
+            GXDLMSClock clock = (GXDLMSClock) captor.getValue();
+            assertThat(clock.getLogicalName()).isEqualTo("0.0.1.0.0.255");
+            assertThat(clock.getClockBase()).isEqualTo(ClockBase.CRYSTAL);
+        }
+
+        @Test
+        void setClockBaseWithNullThrowsIllegalArgumentException() {
+            assertThatThrownBy(() -> client.setClockBase(null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("must not be null");
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -201,6 +272,39 @@ class DlmsMeterClientCosemTest {
             verify(client).readAttribute(captor.capture(), eq(4));
             assertThat(captor.getValue().getLogicalName()).isEqualTo("0.0.96.3.11.255");
             assertThat(state).isEqualTo(ValveState.DISCONNECTED);
+        }
+
+        @Test
+        void setControlModeWritesAttribute3WithDefaultObis() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSDisconnectControl.class), eq(3));
+
+            client.setControlMode(ControlMode.MODE_3);
+
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(3));
+
+            GXDLMSDisconnectControl dc = (GXDLMSDisconnectControl) captor.getValue();
+            assertThat(dc.getLogicalName()).isEqualTo("0.0.96.3.10.255");
+            assertThat(dc.getControlMode()).isEqualTo(ControlMode.MODE_3);
+        }
+
+        @Test
+        void setControlModeWithCustomObis() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSDisconnectControl.class), eq(3));
+
+            client.setControlMode("0.0.96.3.11.255", ControlMode.MODE_1);
+
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(3));
+
+            assertThat(captor.getValue().getLogicalName()).isEqualTo("0.0.96.3.11.255");
+        }
+
+        @Test
+        void setControlModeWithNullThrowsIllegalArgumentException() {
+            assertThatThrownBy(() -> client.setControlMode(null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("must not be null");
         }
     }
 
@@ -370,6 +474,28 @@ class DlmsMeterClientCosemTest {
             assertThat(captor.getValue()).isInstanceOf(GXDLMSActivityCalendar.class);
             assertThat(captor.getValue().getLogicalName()).isEqualTo("0.0.13.0.0.255");
         }
+
+        @Test
+        void writePassiveCalendarWritesAttributes6To10() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSActivityCalendar.class), anyInt());
+
+            GXDLMSActivityCalendar cal = new GXDLMSActivityCalendar("0.0.13.0.0.255");
+            cal.setCalendarNamePassive("Tariffa2027");
+
+            client.writePassiveCalendar(cal);
+
+            // Verify all 5 passive attributes were written
+            for (int attr = 6; attr <= 10; attr++) {
+                verify(client).writeAttribute(any(GXDLMSActivityCalendar.class), eq(attr));
+            }
+        }
+
+        @Test
+        void writePassiveCalendarWithNullThrowsIllegalArgumentException() {
+            assertThatThrownBy(() -> client.writePassiveCalendar(null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("must not be null");
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -431,6 +557,101 @@ class DlmsMeterClientCosemTest {
 
             assertThat(result).isEqualTo(SecuritySuite.SUITE_0);
         }
+
+        @Test
+        void setSecurityPolicyWritesAttribute2WithCorrectObis() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSSecuritySetup.class), eq(2));
+
+            Set<SecurityPolicy> policy = Set.of(SecurityPolicy.AUTHENTICATED);
+            client.setSecurityPolicy(policy);
+
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(2));
+
+            GXDLMSSecuritySetup sec = (GXDLMSSecuritySetup) captor.getValue();
+            assertThat(sec.getLogicalName()).isEqualTo("0.0.43.0.0.255");
+            assertThat(sec.getSecurityPolicy()).containsExactly(SecurityPolicy.AUTHENTICATED);
+        }
+
+        @Test
+        void setSecurityPolicyWithNullThrowsIllegalArgumentException() {
+            assertThatThrownBy(() -> client.setSecurityPolicy(null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("must not be null");
+        }
+
+        @Test
+        void setSecuritySuiteWritesAttribute3() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSSecuritySetup.class), eq(3));
+
+            client.setSecuritySuite(SecuritySuite.SUITE_0);
+
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(3));
+
+            GXDLMSSecuritySetup sec = (GXDLMSSecuritySetup) captor.getValue();
+            assertThat(sec.getLogicalName()).isEqualTo("0.0.43.0.0.255");
+            assertThat(sec.getSecuritySuite()).isEqualTo(SecuritySuite.SUITE_0);
+        }
+
+        @Test
+        void setSecuritySuiteWithNullThrowsIllegalArgumentException() {
+            assertThatThrownBy(() -> client.setSecuritySuite(null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("must not be null");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Profile Generic — configurazione
+    // -----------------------------------------------------------------------
+
+    @Nested
+    class ProfileGenericTests {
+
+        @Test
+        void setCapturePeriodWritesAttribute4WithCorrectObisAndPeriod()
+                throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSProfileGeneric.class), eq(4));
+
+            client.setCapturePeriod("1.0.99.1.0.255", 3600L);
+
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(4));
+
+            GXDLMSProfileGeneric profile = (GXDLMSProfileGeneric) captor.getValue();
+            assertThat(profile.getLogicalName()).isEqualTo("1.0.99.1.0.255");
+            assertThat(profile.getCapturePeriod()).isEqualTo(3600L);
+        }
+
+        @Test
+        void setCaptureObjectsThrowsUnsupportedOperationException() {
+            assertThatThrownBy(() -> client.setCaptureObjects("1.0.99.1.0.255"))
+                    .isInstanceOf(UnsupportedOperationException.class)
+                    .hasMessageContaining("non ancora implementato");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Data — scrittura
+    // -----------------------------------------------------------------------
+
+    @Nested
+    class DataTests {
+
+        @Test
+        void writeDataWritesAttribute2WithCorrectObisAndValue() throws DlmsCommunicationException {
+            doNothing().when(client).writeAttribute(any(GXDLMSData.class), eq(2));
+
+            client.writeData("0.0.96.5.4.255", 42);
+
+            ArgumentCaptor<GXDLMSObject> captor = ArgumentCaptor.forClass(GXDLMSObject.class);
+            verify(client).writeAttribute(captor.capture(), eq(2));
+
+            GXDLMSData data = (GXDLMSData) captor.getValue();
+            assertThat(data.getLogicalName()).isEqualTo("0.0.96.5.4.255");
+            assertThat(data.getValue()).isEqualTo(42);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -469,6 +690,50 @@ class DlmsMeterClientCosemTest {
             assertThatThrownBy(() -> client.readExtendedRegister("1.0.1.8.0.255"))
                     .isInstanceOf(DlmsCommunicationException.class)
                     .hasMessageContaining("read error");
+        }
+
+        @Test
+        void setControlModePropagatesDlmsCommunicationException() throws DlmsCommunicationException {
+            doThrow(new DlmsCommunicationException("write error", 4))
+                    .when(client).writeAttribute(any(GXDLMSDisconnectControl.class), eq(3));
+
+            assertThatThrownBy(() -> client.setControlMode(ControlMode.MODE_3))
+                    .isInstanceOf(DlmsCommunicationException.class)
+                    .hasMessageContaining("write error");
+        }
+
+        @Test
+        void writePassiveCalendarPropagatesDlmsCommunicationException()
+                throws DlmsCommunicationException {
+            doThrow(new DlmsCommunicationException("write error", 5))
+                    .when(client).writeAttribute(any(GXDLMSActivityCalendar.class), eq(6));
+
+            GXDLMSActivityCalendar cal = new GXDLMSActivityCalendar("0.0.13.0.0.255");
+
+            assertThatThrownBy(() -> client.writePassiveCalendar(cal))
+                    .isInstanceOf(DlmsCommunicationException.class)
+                    .hasMessageContaining("write error");
+        }
+
+        @Test
+        void setTimeZonePropagatesDlmsCommunicationException() throws DlmsCommunicationException {
+            doThrow(new DlmsCommunicationException("timezone error", 6))
+                    .when(client).writeAttribute(any(GXDLMSClock.class), eq(3));
+
+            assertThatThrownBy(() -> client.setTimeZone(60))
+                    .isInstanceOf(DlmsCommunicationException.class)
+                    .hasMessageContaining("timezone error");
+        }
+
+        @Test
+        void setCapturePeriodPropagatesDlmsCommunicationException()
+                throws DlmsCommunicationException {
+            doThrow(new DlmsCommunicationException("profile error", 7))
+                    .when(client).writeAttribute(any(GXDLMSProfileGeneric.class), eq(4));
+
+            assertThatThrownBy(() -> client.setCapturePeriod("1.0.99.1.0.255", 900L))
+                    .isInstanceOf(DlmsCommunicationException.class)
+                    .hasMessageContaining("profile error");
         }
     }
 

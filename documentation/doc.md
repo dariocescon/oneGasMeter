@@ -8,10 +8,11 @@
 4. [Configurazione](#configurazione)
 5. [Utilizzo DLMS](#utilizzo)
 6. [Utilizzo COSEM](#utilizzo-cosem)
-7. [Test Unitari](#test)
-8. [Dipendenze](#dipendenze)
-9. [Riferimenti](#riferimenti)
-10. [Changelog](#changelog)
+7. [Server DLMS Inbound](#server-inbound)
+8. [Test Unitari](#test)
+9. [Dipendenze](#dipendenze)
+10. [Riferimenti](#riferimenti)
+11. [Changelog](#changelog)
 
 ---
 
@@ -76,7 +77,8 @@ Supporto per comunicazione tramite linea elettrica (G3-PLC, PRIME):
 ```
 com.aton.proj.oneGasMeter/
 ├── config/
-│   └── DlmsClientConfig          # Configurazione immutabile (builder pattern)
+│   ├── DlmsClientConfig             # Configurazione immutabile connessione uscente (builder pattern)
+│   └── DlmsInboundAutoConfiguration # @Configuration – attiva il server inbound (ConditionalOnProperty)
 ├── cosem/
 │   └── model/
 │       ├── ValveState            # Enum stato valvola (DISCONNECTED, CONNECTED, READY_FOR_RECONNECTION)
@@ -85,27 +87,36 @@ com.aton.proj.oneGasMeter/
 ├── dlms/
 │   ├── DlmsProtocolType          # Enum: HDLC, HDLC_WITH_MODE_E, WRAPPER, PLC, PLC_HDLC
 │   ├── DlmsMeterClient           # Client unificato DLMS+COSEM (registri, clock, valvola, calendar, security...)
-│   └── DlmsConnectionFactory     # Spring @Component factory
+│   ├── DlmsConnectionFactory     # Spring @Component factory (connessioni uscenti)
 │   └── transport/
 │       ├── DlmsTransport         # Interfaccia canale fisico
-│       ├── TcpDlmsTransport      # Implementazione TCP/IP (WRAPPER)
-│       └── HdlcSerialTransport   # Implementazione seriale (HDLC)
+│       ├── TcpDlmsTransport      # TCP/IP WRAPPER – connessione uscente (app→contatore)
+│       ├── IncomingTcpTransport  # TCP/IP WRAPPER – connessione entrante (contatore→app)
+│       └── HdlcSerialTransport   # Seriale HDLC su InputStream/OutputStream
 ├── exception/
 │   └── DlmsCommunicationException # Unchecked exception DLMS
-└── model/
-    └── MeterReading              # Value object lettura contatore
+├── model/
+│   └── MeterReading              # Value object lettura contatore
+└── server/
+    ├── DlmsInboundServer        # Server TCP (virtual threads) – accetta connessioni dai contatori
+    ├── DlmsInboundServerConfig  # Configurazione immutabile del server (builder pattern)
+    ├── MeterSessionHandler      # Runnable: gestione singola sessione contatore
+    └── MeterSessionEvent        # Spring ApplicationEvent pubblicato per ogni sessione attiva
 ```
 
 ### Flusso di comunicazione
 
 ```
-DlmsConnectionFactory
-        │
-        ▼ crea
-DlmsMeterClient (DLMS + COSEM unificato)
+Modo USCENTE (app → contatore)         Modo ENTRANTE (contatore → app)
+─────────────────────────────         ─────────────────────────────
+DlmsConnectionFactory                 DlmsInboundServer (virtual threads)
+        │                                      │
+        ▼ crea                                 ▼ accetta socket TCP
+DlmsMeterClient ←──────────────── MeterSessionHandler.run()
   ├── GXDLMSClient  (gurux.dlms) ← genera/parsa frame DLMS
   └── DlmsTransport              ← trasmette/riceve byte sul canale fisico
-            ├── TcpDlmsTransport  (WRAPPER su TCP socket)
+            ├── TcpDlmsTransport      (WRAPPER – connessione uscente)
+            ├── IncomingTcpTransport  (WRAPPER – connessione entrante)
             └── HdlcSerialTransport (HDLC su InputStream/OutputStream)
 ```
 
@@ -123,13 +134,15 @@ DlmsMeterClient (DLMS + COSEM unificato)
 
 | Classe COSEM | ID | Operazioni |
 |---|---|---|
-| Clock | 8 | readClock, setClock, syncClock |
-| Disconnect Control | 70 | disconnectValve, reconnectValve, getValveState |
+| Clock | 8 | readClock, setClock, syncClock, **setTimeZone**, **setDaylightSavings**, **setClockBase** |
+| Disconnect Control | 70 | disconnectValve, reconnectValve, getValveState, setControlMode |
 | Extended Register | 4 | readExtendedRegister |
 | Demand Register | 5 | readDemandRegister, resetDemandRegister, nextPeriodDemandRegister |
-| Activity Calendar | 20 | readActivityCalendar, activatePassiveCalendar |
+| Activity Calendar | 20 | readActivityCalendar, writePassiveCalendar, activatePassiveCalendar |
 | Script Table | 9 | executeScript |
-| Security Setup | 64 | readSecurityPolicy, readSecuritySuite |
+| Security Setup | 64 | readSecurityPolicy, readSecuritySuite, **setSecurityPolicy**, **setSecuritySuite** |
+| Profile Generic | 7 | **setCapturePeriod**, ~~setCaptureObjects~~ (stub) |
+| Data | 1 | **writeData** |
 
 ---
 
@@ -281,6 +294,19 @@ client.setClock(Instant.parse("2026-03-15T10:00:00Z"));
 
 // Leggi l'ora del contatore
 Instant meterTime = client.readClock();
+
+// Imposta il fuso orario (es. UTC+1 = +60 minuti)
+client.setTimeZone(60);
+
+// Configura l'ora legale (DST) per Europa Centrale
+// Inizio ora legale: ultima domenica di marzo alle 02:00
+// Fine ora legale:   ultima domenica di ottobre alle 03:00
+GXDateTime dstBegin = new GXDateTime(Date.from(Instant.parse("2026-03-29T01:00:00Z")));
+GXDateTime dstEnd   = new GXDateTime(Date.from(Instant.parse("2026-10-25T01:00:00Z")));
+client.setDaylightSavings(true, dstBegin, dstEnd, 60);
+
+// Imposta la sorgente di riferimento del clock
+client.setClockBase(ClockBase.CRYSTAL);
 ```
 
 ### 6.2 Controllo valvola gas
@@ -298,6 +324,12 @@ ValveState state = client.getValveState();
 
 // Con OBIS personalizzato
 client.disconnectValve("0.0.96.3.11.255");
+
+// Imposta la modalità di controllo (attr 3)
+// MODE_3 = controllo remoto, riconnessione solo via comando esplicito
+client.setControlMode(ControlMode.MODE_3);
+// Con OBIS personalizzato
+client.setControlMode("0.0.96.3.11.255", ControlMode.MODE_1);
 ```
 
 ### 6.3 Extended Register (classe 4)
@@ -334,7 +366,16 @@ client.nextPeriodDemandRegister("1.0.1.4.0.255");
 GXDLMSActivityCalendar cal = client.readActivityCalendar();
 System.out.println("Calendario attivo: " + cal.getCalendarNameActive());
 
-// Attivazione del calendario passivo
+// Scrittura del nuovo calendario passivo (attrs 6-10)
+GXDLMSActivityCalendar nuovoCal = new GXDLMSActivityCalendar("0.0.13.0.0.255");
+nuovoCal.setCalendarNamePassive("Tariffa2027");
+nuovoCal.setSeasonProfilePassive(/* ... */);
+nuovoCal.setWeekProfileTablePassive(/* ... */);
+nuovoCal.setDayProfileTablePassive(/* ... */);
+nuovoCal.setTime(new GXDateTime(/* data di attivazione */));
+client.writePassiveCalendar(nuovoCal);
+
+// Attivazione del calendario passivo (ACTION metodo 1)
 client.activatePassiveCalendar();
 ```
 
@@ -348,13 +389,115 @@ client.executeScript("0.0.10.0.0.255", 1);
 ### 6.7 Security Setup (classe 64)
 
 ```java
+// Lettura
 Set<SecurityPolicy> policies = client.readSecurityPolicy();
 SecuritySuite suite = client.readSecuritySuite();
+
+// Scrittura (ATTENZIONE: operazioni critiche)
+client.setSecurityPolicy(Set.of(SecurityPolicy.AUTHENTICATED, SecurityPolicy.ENCRYPTED));
+client.setSecuritySuite(SecuritySuite.SUITE_0);
+```
+
+### 6.8 Profile Generic – configurazione (classe 7)
+
+```java
+// Imposta il periodo di acquisizione a 15 minuti
+client.setCapturePeriod("1.0.99.1.0.255", 900L);
+
+// La configurazione degli oggetti da acquisire (setCaptureObjects) non è ancora
+// implementata: richiede la lista degli OBIS specifici del contatore.
+```
+
+### 6.9 Data – scrittura (classe 1)
+
+```java
+// Scrittura di un oggetto Data generico
+// Gli OBIS specifici del contatore (soglie, parametri di configurazione, ecc.)
+// verranno determinati a partire dalle specifiche del dispositivo.
+client.writeData("0.0.96.5.4.255", 42);
 ```
 
 ---
 
-## 7. Test Unitari <a name="test"></a>
+## 7. Server DLMS Inbound <a name="server-inbound"></a>
+
+La modalità **inbound** (contatore-iniziato) è il complemento della modalità client: sono i contatori a stabilire la connessione TCP verso l'applicazione, che risponde agendo come client DLMS sulla socket accettata.
+
+### 7.1 Modello di comunicazione
+
+```
+Contatore                          Applicazione
+   │                                    │
+   │──── TCP connect ──────────────────►│
+   │                                    │ accept() → IncomingTcpTransport
+   │◄─── AARQ (DLMS client request) ────│
+   │──── AARE (risposta) ──────────────►│
+   │                                    │ Sessione DLMS stabilita
+   │◄─── GET / SET / ACTION ────────────│
+   │──── Response ─────────────────────►│
+   │                                    │ MeterSessionEvent pubblicato
+   │                                    │ disconnect()
+   │◄─── Disconnessione ────────────────│
+```
+
+Per ogni socket accettata viene avviato un **virtual thread** (Java 21). Il `DlmsMeterClient` riutilizzato è esattamente lo stesso della modalità uscente; la sola differenza è che il transport (`IncomingTcpTransport`) wrappa la socket già aperta invece di aprirne una nuova.
+
+### 7.2 Attivazione
+
+Aggiungere al file `application.properties`:
+
+```properties
+dlms.inbound.enabled=true
+dlms.inbound.port=4059
+dlms.inbound.session-timeout-ms=30000
+dlms.inbound.client-address=16
+dlms.inbound.server-address=1
+dlms.inbound.authentication=NONE
+# dlms.inbound.password=
+```
+
+Se `dlms.inbound.enabled` non è impostato a `true`, il server non viene creato e nessuna porta TCP viene aperta (utile nei test di integrazione).
+
+### 7.3 Gestione degli eventi di sessione
+
+Per ogni contatore connesso viene pubblicato un `MeterSessionEvent` **sincrono**. Il listener riceve un `DlmsMeterClient` già connesso e può eseguire qualsiasi operazione GET/SET/ACTION:
+
+```java
+@Component
+public class MeterSessionListener {
+
+    @EventListener
+    public void onMeterSession(MeterSessionEvent event) {
+        DlmsMeterClient client = event.client();
+        String ip = event.meterIp();
+
+        // Il client è valido solo durante questa callback
+        MeterReading reading = client.readRegister("1.0.1.8.0.255");
+        System.out.printf("Contatore %s – volume: %s %s%n",
+            ip, reading.getValue(), reading.getUnit());
+
+        // NON conservare il riferimento a client dopo il return
+    }
+}
+```
+
+> **Importante:** il `DlmsMeterClient` nell'evento è valido **solo durante la callback sincrona**. Conservarne il riferimento dopo il ritorno del listener causerà operazioni su un client disconnesso.
+
+### 7.4 DlmsInboundServerConfig – parametri
+
+| Parametro | Default | Descrizione |
+|---|---|---|
+| `listenPort` | 4059 | Porta TCP su cui il server resta in ascolto |
+| `sessionTimeoutMs` | 30 000 | Timeout read/write per sessione (ms) |
+| `clientAddress` | 16 | Indirizzo DLMS client (SAP) |
+| `serverAddress` | 1 | Indirizzo DLMS server (logical device) |
+| `authentication` | NONE | Livello di autenticazione DLMS |
+| `password` | null | Password (per LOW/HIGH authentication) |
+| `useLogicalNameReferencing` | true | LN referencing (false = SN) |
+
+---
+
+## 8. Test Unitari <a name="test"></a>
 
 I test sono scritti con **JUnit 5** e **Mockito** (inclusi tramite `spring-boot-starter-test`).
 
@@ -365,13 +508,17 @@ I test sono scritti con **JUnit 5** e **Mockito** (inclusi tramite `spring-boot-
 | `HdlcSerialTransportTest` | Lettura frame HDLC, gestione flag 0x7E, errori di stream |
 | `TcpDlmsTransportTest` | Parsing frame WRAPPER, write/read, timeout, socket mock |
 | `DlmsMeterClientTest` | Configurazione GXDLMSClient, readAttribute/writeAttribute/invokeMethod, eccezioni |
-| `DlmsMeterClientCosemTest` | Operazioni COSEM: clock, valvola, registri, calendar, script, security (Mockito Spy) |
+| `DlmsMeterClientCosemTest` | Operazioni COSEM: clock (incl. DST/timezone/clockBase), valvola, registri, calendar, script, security, profile generic, data write (Mockito Spy) |
 | `DlmsConnectionFactoryTest` | Creazione client da Spring context, UnsupportedOperationException per HDLC |
 | `MeterReadingTest` | Builder, valori default, validazione OBIS code |
 | `DlmsCommunicationExceptionTest` | Costruttori, error code, tipo eccezione |
 | `ValveStateTest` | Mapping da ControlState, gestione null |
 | `ExtendedReadingTest` | Builder, default values, validazione OBIS |
 | `DemandReadingTest` | Builder, tutti i campi, validazione OBIS |
+| `IncomingTcpTransportTest` | Constructor (setSoTimeout), connect() no-op, disconnect, isConnected, write, read frame WRAPPER, EOF |
+| `DlmsInboundServerConfigTest` | Builder, valori default, validazione porta/timeout, toSessionConfig() |
+| `MeterSessionHandlerTest` | Happy path, factory fallisce (socket.close), connect fallisce (client.disconnect), publisher fallisce (finally), meterIp corretto |
+| `DlmsInboundServerTest` | stop() senza start, bind alla porta configurata, bind fallisce gracefully |
 
 Per eseguire tutti i test:
 ```bash
@@ -380,7 +527,7 @@ Per eseguire tutti i test:
 
 ---
 
-## 8. Dipendenze <a name="dipendenze"></a>
+## 9. Dipendenze <a name="dipendenze"></a>
 
 | Artefatto | Versione | Scopo |
 |---|---|---|
@@ -395,7 +542,7 @@ Per eseguire tutti i test:
 
 ---
 
-## 9. Riferimenti <a name="riferimenti"></a>
+## 10. Riferimenti <a name="riferimenti"></a>
 
 - [DLMS/COSEM standard – DLMS UA](https://www.dlms.com/)
 - [IEC 62056-46: HDLC data link layer](https://www.iec.ch/)
@@ -406,7 +553,94 @@ Per eseguire tutti i test:
 
 ---
 
-## 10. Changelog <a name="changelog"></a>
+## 11. Changelog <a name="changelog"></a>
+
+### 2026-03-19 – Server DLMS Inbound: connessioni iniziate dai contatori
+
+#### Motivazione
+
+I contatori di nuova generazione (NB-IoT / GPRS) aprono essi stessi la connessione TCP verso il concentratore. L'architettura è stata estesa per supportare questa modalità **meter-initiated** mantenendo invariato il `DlmsMeterClient`.
+
+#### Nuovi file
+
+| File | Tipo | Descrizione |
+|---|---|---|
+| `dlms/transport/IncomingTcpTransport` | Produzione | Transport DLMS WRAPPER che wrappa una socket già accettata; `connect()` è no-op |
+| `server/DlmsInboundServerConfig` | Produzione | Configurazione immutabile del server (builder pattern): listenPort, sessionTimeoutMs, auth... |
+| `server/MeterSessionEvent` | Produzione | Java record – Spring ApplicationEvent con meterIp, connectedAt, DlmsMeterClient attivo |
+| `server/MeterSessionHandler` | Produzione | Runnable: factory → connect → publishEvent → disconnect (finally); SessionFactory per test |
+| `server/DlmsInboundServer` | Produzione | @PostConstruct/@PreDestroy; virtual thread per accept loop + executor per sessioni |
+| `config/DlmsInboundAutoConfiguration` | Produzione | @Configuration @ConditionalOnProperty(dlms.inbound.enabled=true) |
+| `dlms/transport/IncomingTcpTransportTest` | Test | 10 test: setSoTimeout, connect no-op, disconnect, isConnected, write, read frame, EOF |
+| `server/DlmsInboundServerConfigTest` | Test | 7 test: default, custom, validazione porta/timeout/auth, toSessionConfig |
+| `server/MeterSessionHandlerTest` | Test | 5 test: happy path, factory fallisce, connect fallisce, publisher fallisce, meterIp |
+| `server/DlmsInboundServerTest` | Test | 3 test: stop senza start, bind porta, bind fallisce gracefully |
+
+#### Decisioni architetturali
+
+- **Virtual threads (Java 21)**: `Executors.newVirtualThreadPerTaskExecutor()` gestisce migliaia di sessioni DLMS concorrenti con I/O bloccante senza overhead di thread OS.
+- **DlmsMeterClient invariato**: il client esistente è riutilizzato senza modifiche; la sola differenza è il transport (`IncomingTcpTransport` vs `TcpDlmsTransport`).
+- **@ConditionalOnProperty**: il server non parte nei test di integrazione se `dlms.inbound.enabled` non è `true`.
+- **Evento sincrono**: il `DlmsMeterClient` è valido solo durante la callback; non va conservato dopo il return del listener.
+- **SessionFactory / ServerSocketFactory**: interfacce funzionali package-private per l'iniettabilità nei test unitari senza aprire porte reali.
+
+#### Nuovi test
+
+| File | Test |
+|---|---|
+| `IncomingTcpTransportTest` | 10 |
+| `DlmsInboundServerConfigTest` | 7 |
+| `MeterSessionHandlerTest` | 5 |
+| `DlmsInboundServerTest` | 3 |
+
+Test totali progetto: da 135 a **160**.
+
+---
+
+### 2026-03-19 – Completamento attributi scrivibili: Clock, SecuritySetup, ProfileGeneric, Data
+
+#### Nuovi metodi
+
+| Metodo | Oggetto COSEM | Attributo | Descrizione |
+|---|---|---|---|
+| `setTimeZone(int)` | Clock (8) | 3 | Imposta il fuso orario (offset UTC in minuti) |
+| `setDaylightSavings(boolean, GXDateTime, GXDateTime, int)` | Clock (8) | 5–8 | Configura l'ora legale (begin, end, deviation, enabled) |
+| `setClockBase(ClockBase)` | Clock (8) | 9 | Imposta la sorgente di riferimento del clock |
+| `setSecurityPolicy(Set<SecurityPolicy>)` | Security Setup (64) | 2 | Imposta la security policy |
+| `setSecuritySuite(SecuritySuite)` | Security Setup (64) | 3 | Imposta la security suite |
+| `setCapturePeriod(String, long)` | Profile Generic (7) | 4 | Imposta il periodo di acquisizione in secondi |
+| `setCaptureObjects(String)` | Profile Generic (7) | 3 | **Stub** — da implementare con le specifiche del contatore |
+| `writeData(String, Object)` | Data (1) | 2 | Scrittura generica di oggetti Data |
+
+#### Nuovi test
+
+| File | Test aggiunti |
+|---|---|
+| `DlmsMeterClientCosemTest.java` | +14 test: Clock×6 (setTimeZone, setDaylightSavings×2, setClockBase×2), SecuritySetup×4, ProfileGeneric×2, Data×1, ErrorPropagation×1 |
+
+Test totali progetto: da 121 a 135.
+
+---
+
+### 2026-03-18 – Aggiunta setControlMode e writePassiveCalendar
+
+#### Nuovi metodi
+
+| Metodo | Oggetto COSEM | Attributo scritto | Descrizione |
+|---|---|---|---|
+| `setControlMode(ControlMode)` | Disconnect Control (70) | 3 | Imposta la modalità di controllo remoto della valvola |
+| `setControlMode(obisCode, ControlMode)` | Disconnect Control (70) | 3 | Come sopra, con OBIS personalizzato |
+| `writePassiveCalendar(GXDLMSActivityCalendar)` | Activity Calendar (20) | 6–10 | Scrive il profilo tariffario passivo (name, seasons, weeks, days, activationTime) |
+
+#### Nuovi test
+
+| File | Test aggiunti |
+|---|---|
+| `DlmsMeterClientCosemTest.java` | +7 test: setControlMode (3), writePassiveCalendar (2), error propagation (2) |
+
+Test totali progetto: da 114 a 121.
+
+---
 
 ### 2026-03-17 – Refactoring: merge CosemMeterService in DlmsMeterClient
 
