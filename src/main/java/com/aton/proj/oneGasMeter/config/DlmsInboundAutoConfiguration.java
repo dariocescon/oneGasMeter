@@ -26,6 +26,8 @@ import org.springframework.context.annotation.Configuration;
  *   dlms.inbound.server-address   = 1              # DLMS server address (default: 1)
  *   dlms.inbound.authentication   = NONE           # Authentication level (default: NONE)
  *   dlms.inbound.password         =                # Password (optional)
+ *   dlms.inbound.max-connections    = 10000          # Max concurrent sessions (default: 10 000)
+ *   dlms.inbound.backlog            = 1024           # TCP accept backlog (default: 1 024)
  * </pre>
  */
 @Configuration
@@ -50,6 +52,12 @@ public class DlmsInboundAutoConfiguration {
     @Value("${dlms.inbound.password:#{null}}")
     private String password;
 
+    @Value("${dlms.inbound.max-connections:10000}")
+    private int maxConnections;
+
+    @Value("${dlms.inbound.backlog:1024}")
+    private int backlog;
+
     /**
      * Creates the {@link DlmsInboundServerConfig} bean from application properties.
      *
@@ -64,14 +72,17 @@ public class DlmsInboundAutoConfiguration {
                 .serverAddress(serverAddress)
                 .authentication(authentication)
                 .password(password)
+                .maxConnections(maxConnections)
+                .backlog(backlog)
                 .build();
     }
 
     /**
      * Creates the {@link DlmsInboundServer} bean.
      * <p>
-     * The server's {@code @PostConstruct} method starts the accept loop automatically
-     * when the bean is initialised by Spring.
+     * The server implements {@link org.springframework.boot.CommandLineRunner}:
+     * Spring Boot calls {@code run()} after context initialization, which blocks
+     * the main thread while the server is listening.
      * </p>
      *
      * @param serverConfig   inbound server configuration

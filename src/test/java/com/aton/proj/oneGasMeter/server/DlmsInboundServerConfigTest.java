@@ -20,6 +20,8 @@ class DlmsInboundServerConfigTest {
         assertThat(config.getAuthentication()).isEqualTo(Authentication.NONE);
         assertThat(config.getPassword()).isNull();
         assertThat(config.isUseLogicalNameReferencing()).isTrue();
+        assertThat(config.getMaxConnections()).isEqualTo(10_000);
+        assertThat(config.getBacklog()).isEqualTo(1_024);
     }
 
     @Test
@@ -32,6 +34,8 @@ class DlmsInboundServerConfigTest {
                 .authentication(Authentication.LOW)
                 .password("s3cr3t")
                 .useLogicalNameReferencing(false)
+                .maxConnections(500)
+                .backlog(256)
                 .build();
 
         assertThat(config.getListenPort()).isEqualTo(5000);
@@ -41,6 +45,8 @@ class DlmsInboundServerConfigTest {
         assertThat(config.getAuthentication()).isEqualTo(Authentication.LOW);
         assertThat(config.getPassword()).isEqualTo("s3cr3t");
         assertThat(config.isUseLogicalNameReferencing()).isFalse();
+        assertThat(config.getMaxConnections()).isEqualTo(500);
+        assertThat(config.getBacklog()).isEqualTo(256);
     }
 
     @Test
@@ -69,6 +75,20 @@ class DlmsInboundServerConfigTest {
         assertThatThrownBy(() -> DlmsInboundServerConfig.builder().authentication(null).build())
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Authentication");
+    }
+
+    @Test
+    void build_throwsOnNonPositiveMaxConnections() {
+        assertThatThrownBy(() -> DlmsInboundServerConfig.builder().maxConnections(0).build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Max connections");
+    }
+
+    @Test
+    void build_throwsOnNonPositiveBacklog() {
+        assertThatThrownBy(() -> DlmsInboundServerConfig.builder().backlog(0).build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Backlog");
     }
 
     @Test

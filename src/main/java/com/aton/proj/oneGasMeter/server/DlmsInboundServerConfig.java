@@ -20,6 +20,8 @@ import gurux.dlms.enums.Authentication;
  *   <li>Server address: 1</li>
  *   <li>Authentication: {@link Authentication#NONE}</li>
  *   <li>Logical-name referencing: {@code true}</li>
+ *   <li>Max concurrent connections: 10 000</li>
+ *   <li>TCP accept backlog: 1 024</li>
  * </ul>
  * </p>
  */
@@ -32,6 +34,8 @@ public class DlmsInboundServerConfig {
     private final Authentication authentication;
     private final String password;
     private final boolean useLogicalNameReferencing;
+    private final int maxConnections;
+    private final int backlog;
 
     private DlmsInboundServerConfig(Builder builder) {
         this.listenPort = builder.listenPort;
@@ -41,6 +45,8 @@ public class DlmsInboundServerConfig {
         this.authentication = builder.authentication;
         this.password = builder.password;
         this.useLogicalNameReferencing = builder.useLogicalNameReferencing;
+        this.maxConnections = builder.maxConnections;
+        this.backlog = builder.backlog;
     }
 
     /** TCP port the server listens on (default: 4059). */
@@ -76,6 +82,16 @@ public class DlmsInboundServerConfig {
     /** Whether to use logical-name (LN) referencing; {@code false} = short-name (default: {@code true}). */
     public boolean isUseLogicalNameReferencing() {
         return useLogicalNameReferencing;
+    }
+
+    /** Maximum number of concurrent meter sessions (default: 10 000). */
+    public int getMaxConnections() {
+        return maxConnections;
+    }
+
+    /** TCP {@link java.net.ServerSocket} accept backlog (default: 1 024). */
+    public int getBacklog() {
+        return backlog;
     }
 
     /**
@@ -123,6 +139,8 @@ public class DlmsInboundServerConfig {
         private Authentication authentication = Authentication.NONE;
         private String password;
         private boolean useLogicalNameReferencing = true;
+        private int maxConnections = 10_000;
+        private int backlog = 1_024;
 
         /** TCP port to listen on (default: 4059). */
         public Builder listenPort(int listenPort) {
@@ -166,6 +184,18 @@ public class DlmsInboundServerConfig {
             return this;
         }
 
+        /** Maximum number of concurrent meter sessions (default: 10 000). */
+        public Builder maxConnections(int maxConnections) {
+            this.maxConnections = maxConnections;
+            return this;
+        }
+
+        /** TCP {@link java.net.ServerSocket} accept backlog (default: 1 024). */
+        public Builder backlog(int backlog) {
+            this.backlog = backlog;
+            return this;
+        }
+
         /**
          * Validates and builds the {@link DlmsInboundServerConfig}.
          *
@@ -186,6 +216,12 @@ public class DlmsInboundServerConfig {
             }
             if (authentication == null) {
                 throw new IllegalArgumentException("Authentication must not be null");
+            }
+            if (maxConnections <= 0) {
+                throw new IllegalArgumentException("Max connections must be positive, got: " + maxConnections);
+            }
+            if (backlog <= 0) {
+                throw new IllegalArgumentException("Backlog must be positive, got: " + backlog);
             }
         }
     }

@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -24,70 +26,74 @@ class DlmsInboundServerTest {
     private ApplicationEventPublisher publisher;
 
     @Test
-    void stop_withoutStart_doesNotThrow() {
+    void shutdown_withoutRun_doesNotThrow() {
         DlmsInboundServerConfig config = DlmsInboundServerConfig.builder().build();
-        DlmsInboundServer server = new DlmsInboundServer(config, publisher, port -> {
+        DlmsInboundServer server = new DlmsInboundServer(config, publisher, (port, backlog) -> {
             throw new IOException("should not be called");
         });
 
-        // stop() before start() must not throw NPE or any other exception
-        assertThatCode(server::stop).doesNotThrowAnyException();
+        // shutdown() before run() must not throw NPE or any other exception
+        assertThatCode(server::shutdown).doesNotThrowAnyException();
     }
 
     @Test
-    void acceptLoop_bindsToConfiguredPort() throws Exception {
+    void run_bindsToConfiguredPort() throws Exception {
         int expectedPort = 9876;
         DlmsInboundServerConfig config = DlmsInboundServerConfig.builder()
                 .listenPort(expectedPort)
                 .build();
 
-        CountDownLatch bound = new CountDownLatch(1);
+        // 'accepting' fires when accept() is actually entered — guarantees that
+        // serverSocket and running are fully set before shutdown() is called
+        CountDownLatch accepting = new CountDownLatch(1);
+        CountDownLatch acceptWait = new CountDownLatch(1);
         AtomicInteger capturedPort = new AtomicInteger(-1);
 
         ServerSocket mockSS = mock(ServerSocket.class);
-        when(mockSS.isClosed()).thenReturn(true); // exit the while loop immediately
+        when(mockSS.accept()).thenAnswer(inv -> {
+            accepting.countDown();       // signal: we are blocked inside accept()
+            try {
+                acceptWait.await();      // wait to be released by close()
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            throw new IOException("socket closed");
+        });
+        // close() unblocks accept() (mirrors real ServerSocket behaviour)
+        doAnswer(inv -> { acceptWait.countDown(); return null; }).when(mockSS).close();
 
-        DlmsInboundServer server = new DlmsInboundServer(config, publisher, port -> {
+        DlmsInboundServer server = new DlmsInboundServer(config, publisher, (port, backlog) -> {
             capturedPort.set(port);
-            bound.countDown();
             return mockSS;
         });
 
-        server.start();
+        Thread serverThread = Thread.ofVirtual().name("test-server").start(server::run);
 
-        assertThat(bound.await(3, TimeUnit.SECONDS))
-                .as("ServerSocketFactory should be called within 3 seconds")
+        // Wait until the server is genuinely blocked in accept(), then check port
+        assertThat(accepting.await(3, TimeUnit.SECONDS))
+                .as("Server should reach accept() within 3 seconds")
                 .isTrue();
         assertThat(capturedPort.get()).isEqualTo(expectedPort);
 
-        server.stop();
+        server.shutdown();
+        serverThread.join(2000);
     }
 
     @Test
-    void acceptLoop_logsError_whenBindFails() throws Exception {
+    void run_throwsRuntimeException_whenBindFails() {
         DlmsInboundServerConfig config = DlmsInboundServerConfig.builder()
                 .listenPort(4059)
                 .build();
 
-        CountDownLatch factoryCalled = new CountDownLatch(1);
-
-        // Factory simulates address-already-in-use
-        DlmsInboundServer server = new DlmsInboundServer(config, publisher, port -> {
-            factoryCalled.countDown();
+        DlmsInboundServer server = new DlmsInboundServer(config, publisher, (port, backlog) -> {
             throw new IOException("Address already in use");
         });
 
-        server.start();
+        assertThatThrownBy(server::run)
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Cannot start DLMS inbound server");
 
-        // The factory should be called; the accept loop should terminate gracefully
-        assertThat(factoryCalled.await(3, TimeUnit.SECONDS))
-                .as("Factory should be invoked even when bind fails")
-                .isTrue();
-
-        // Give the virtual thread a moment to terminate
-        Thread.sleep(100);
-
-        // stop() must be safe even after a failed bind
-        assertThatCode(server::stop).doesNotThrowAnyException();
+        // shutdown() must be safe even after a failed bind
+        assertThatCode(server::shutdown).doesNotThrowAnyException();
     }
 }
