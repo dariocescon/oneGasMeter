@@ -58,7 +58,7 @@ public class DlmsInboundServer implements CommandLineRunner {
         /**
          * Creates and binds a {@link ServerSocket} to the given port.
          *
-         * @param port TCP port to listen on
+         * @param port    TCP port to listen on
          * @param backlog maximum number of pending connections in the OS queue
          * @return a bound, listening {@link ServerSocket}
          * @throws IOException if binding fails (e.g. port already in use)
@@ -121,13 +121,13 @@ public class DlmsInboundServer implements CommandLineRunner {
     // -----------------------------------------------------------------------
 
     private void startServer() {
-            try {
+        try {
             serverSocket = serverSocketFactory.create(config.getListenPort(), config.getBacklog());
             running = true;
             log.info("DLMS inbound server started on port {}", config.getListenPort());
             log.info("Max concurrent connections: {}", config.getMaxConnections());
             acceptConnections();
-            } catch (IOException e) {
+        } catch (IOException e) {
             log.error("Failed to start DLMS inbound server on port {}: {}",
                     config.getListenPort(), e.getMessage(), e);
             throw new RuntimeException("Cannot start DLMS inbound server", e);
@@ -136,7 +136,7 @@ public class DlmsInboundServer implements CommandLineRunner {
 
     private void acceptConnections() {
         while (running) {
-        try {
+            try {
                 connectionLimiter.acquire();
                 int available = connectionLimiter.availablePermits();
                 if (available < config.getMaxConnections() * 0.1) {
@@ -145,7 +145,7 @@ public class DlmsInboundServer implements CommandLineRunner {
                 }
                 Socket meterSocket = serverSocket.accept();
                 executorService.submit(() -> {
-                try {
+                    try {
                         new MeterSessionHandler(meterSocket, config, eventPublisher).run();
                     } finally {
                         connectionLimiter.release();
@@ -156,14 +156,14 @@ public class DlmsInboundServer implements CommandLineRunner {
                     log.warn("Connection limiter interrupted unexpectedly");
                     Thread.currentThread().interrupt();
                 }
-                } catch (IOException e) {
+            } catch (IOException e) {
                 if (running) {
                     log.error("Error accepting inbound DLMS connection: {}", e.getMessage(), e);
                 }
                 connectionLimiter.release();
-                    }
-                    }
-                }
+            }
+        }
+    }
 
     /**
      * Stops the server gracefully.
@@ -181,7 +181,7 @@ public class DlmsInboundServer implements CommandLineRunner {
         try {
             ServerSocket ss = this.serverSocket;
             if (ss != null && !ss.isClosed()) {
-                    ss.close();
+                ss.close();
             }
             executorService.shutdown();
             if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
