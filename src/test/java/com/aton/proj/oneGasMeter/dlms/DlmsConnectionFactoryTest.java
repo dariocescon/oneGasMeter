@@ -14,7 +14,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import com.aton.proj.oneGasMeter.config.DlmsClientConfig;
 import com.aton.proj.oneGasMeter.dlms.transport.DlmsTransport;
 
-@SpringBootTest
+@SpringBootTest(properties = "dlms.inbound.enabled=false")
 class DlmsConnectionFactoryTest {
 
     @Autowired
