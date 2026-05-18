@@ -9,7 +9,8 @@ import java.util.Map;
  * Comando da eseguire su un meter DLMS durante la prossima sessione inbound.
  * <p>
  * Un comando viene creato con stato {@link MeterCommandStatus#PENDING} e
- * aggiornato da {@link MeterCommandExecutor} durante l'esecuzione.
+ * aggiornato da {@link com.aton.proj.oneGasMeter.listener.MeterSessionLogger}
+ * durante l'esecuzione.
  * </p>
  */
 public class MeterCommand {
@@ -46,16 +47,16 @@ public class MeterCommand {
     public Instant getExecutedAt()       { return executedAt; }
     public String getErrorMessage()      { return errorMessage; }
 
-    void markInProgress() {
+    public void markInProgress() {
         this.status = MeterCommandStatus.IN_PROGRESS;
     }
 
-    void markDone() {
+    public void markDone() {
         this.status = MeterCommandStatus.DONE;
         this.executedAt = Instant.now();
     }
 
-    void markFailed(String errorMessage) {
+    public void markFailed(String errorMessage) {
         this.status = MeterCommandStatus.FAILED;
         this.executedAt = Instant.now();
         this.errorMessage = errorMessage;

@@ -13,6 +13,8 @@ package com.aton.proj.oneGasMeter.command;
  *   <li>{@link #SET_CLOCK} — chiave {@code "isoDateTime"} (ISO-8601, es. {@code 2026-03-26T10:00:00Z})</li>
  *   <li>{@link #DISCONNECT_VALVE} — nessun payload richiesto</li>
  *   <li>{@link #RECONNECT_VALVE} — nessun payload richiesto</li>
+ *   <li>{@link #CHANGE_PUSH_DESTINATION} — chiavi {@code "ip"} (es. {@code 192.168.1.10}) e
+ *       {@code "port"} (es. {@code 4059})</li>
  * </ul>
  */
 public enum MeterCommandType {
@@ -27,5 +29,11 @@ public enum MeterCommandType {
     RECONNECT_VALVE,
 
     /** Chiude la valvola del meter (remote disconnect). */
-    DISCONNECT_VALVE
+    DISCONNECT_VALVE,
+
+    /**
+     * Cambia la destinazione push del meter (COSEM Push Setup, OBIS {@code 0.0.25.9.0.255}).
+     * <p>Payload richiesto: {@code "ip"} (indirizzo IP) e {@code "port"} (porta TCP intera).</p>
+     */
+    CHANGE_PUSH_DESTINATION
 }

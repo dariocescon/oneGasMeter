@@ -22,12 +22,15 @@ import gurux.dlms.objects.GXDLMSObject;
 import gurux.dlms.objects.GXDLMSObjectCollection;
 import gurux.dlms.objects.GXDLMSProfileGeneric;
 import gurux.dlms.objects.GXDLMSRegister;
+import gurux.dlms.objects.GXDLMSPushSetup;
 import gurux.dlms.objects.GXDLMSScriptTable;
 import gurux.dlms.objects.GXDLMSSecuritySetup;
 import gurux.dlms.objects.enums.ClockBase;
 import gurux.dlms.objects.enums.ControlMode;
+import gurux.dlms.objects.enums.MessageType;
 import gurux.dlms.objects.enums.SecurityPolicy;
 import gurux.dlms.objects.enums.SecuritySuite;
+import gurux.dlms.objects.enums.ServiceType;
 
 import java.io.IOException;
 import java.time.Instant;
@@ -88,6 +91,9 @@ public class DlmsMeterClient {
 
     /** OBIS code standard per il Security Setup. */
     private static final String SECURITY_SETUP_OBIS = "0.0.43.0.0.255";
+
+    /** OBIS code standard per il Push Setup (IP). */
+    private static final String PUSH_SETUP_OBIS = "0.0.25.9.0.255";
 
     // -----------------------------------------------------------------------
     // Fields
@@ -925,6 +931,42 @@ public class DlmsMeterClient {
         GXDLMSData data = new GXDLMSData(obisCode);
         data.setValue(value);
         writeAttribute(data, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // COSEM: Push Setup (classe 40) — destinazione push
+    // -----------------------------------------------------------------------
+
+    /**
+     * Cambia la destinazione push del meter usando l'OBIS standard {@code 0.0.25.9.0.255}.
+     * <p>
+     * Scrive l'attributo 3 ({@code SendDestinationAndMethod}) del COSEM Push Setup,
+     * impostando servizio TCP, indirizzo {@code ip:port} e message type {@code COSEM_APDU}.
+     * </p>
+     *
+     * @param ip   indirizzo IP del server destinatario
+     * @param port porta TCP del server destinatario
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     */
+    public void setPushDestination(String ip, int port) throws DlmsCommunicationException {
+        setPushDestination(PUSH_SETUP_OBIS, ip, port);
+    }
+
+    /**
+     * Cambia la destinazione push del meter usando un OBIS specifico.
+     *
+     * @param obisCode OBIS code del Push Setup
+     * @param ip       indirizzo IP del server destinatario
+     * @param port     porta TCP del server destinatario
+     * @throws DlmsCommunicationException se la scrittura fallisce
+     */
+    public void setPushDestination(String obisCode, String ip, int port)
+            throws DlmsCommunicationException {
+        GXDLMSPushSetup push = new GXDLMSPushSetup(obisCode);
+        push.setService(ServiceType.TCP);
+        push.setDestination(ip + ":" + port);
+        push.setMessage(MessageType.COSEM_APDU);
+        writeAttribute(push, 3);
     }
 
     // -----------------------------------------------------------------------
